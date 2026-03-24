@@ -1,5 +1,34 @@
 const { Telegraf, session, Markup } = require('telegraf');
+const axios = require('axios');
+const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs');
+const bcrypt = require('bcryptjs');
 const { db } = require('./db');
+
+async function downloadAndCompressTelegramPhoto(ctx, fileId) {
+  try {
+    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const response = await axios.get(fileLink.toString(), { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data, 'binary');
+    
+    const filename = `bot_${Date.now()}_${Math.round(Math.random() * 1E9)}.jpg`;
+    const filepath = path.join(__dirname, '..', 'public', 'uploads', filename);
+    
+    const dir = path.dirname(filepath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    await sharp(buffer)
+      .resize({ width: 800, withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toFile(filepath);
+      
+    return '/uploads/' + filename;
+  } catch (err) {
+    console.error('Telegram photo processing failed:', err);
+    return null;
+  }
+}
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -29,12 +58,24 @@ const MAIN_MENU = Markup.keyboard([
   ['📋 Mening murojaatlarim']
 ]).resize();
 
+const STAFF_MENU = Markup.keyboard([
+  ['📋 Menga biriktirilgan vazifalar'],
+  ['🚪 Chiqish (Xodim)']
+]).resize();
+
 const CANCEL_KB = Markup.keyboard([
   ['❌ Bekor qilish']
 ]).resize();
 
 bot.start((ctx) => {
   const telegramId = ctx.from.id;
+  
+  const adminCheck = db.prepare('SELECT id, username FROM admins WHERE telegram_id = ?').get(telegramId);
+  if (adminCheck) {
+    ctx.session = { step: 'idle', admin_id: adminCheck.id };
+    return ctx.reply(`👋 Salom, xodim ${adminCheck.username}!\n\nXizmat vazifalaringizni boshqarishingiz mumkin.`, STAFF_MENU);
+  }
+
   const fullName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || 'Foydalanuvchi';
   
   db.prepare(`
@@ -51,9 +92,36 @@ bot.start((ctx) => {
   );
 });
 
-bot.hears('❌ Bekor qilish', (ctx) => {
+bot.command('login', async (ctx) => {
+  const text = ctx.message.text.trim();
+  const parts = text.split(' ');
+  if (parts.length !== 3) {
+    return ctx.reply("Foydalanish: /login <username> <password>");
+  }
+  const username = parts[1];
+  const password = parts[2];
+
+  const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username);
+  if (!admin) return ctx.reply("Bunday xodim topilmadi!");
+  
+  const match = await bcrypt.compare(password, admin.password_hash);
+  if (!match) return ctx.reply("Parol noto'g'ri!");
+  
+  db.prepare('UPDATE admins SET telegram_id = ? WHERE id = ?').run(ctx.from.id, admin.id);
+  ctx.session = { step: 'idle', admin_id: admin.id };
+  return ctx.reply(`✅ Xush kelibsiz, ${username}! Endi siz Telegram orqali vazifalarni boshqara olasiz.`, STAFF_MENU);
+});
+
+bot.hears('🚪 Chiqish (Xodim)', (ctx) => {
+  db.prepare('UPDATE admins SET telegram_id = NULL WHERE telegram_id = ?').run(ctx.from.id);
   ctx.session = { step: 'idle' };
-  return ctx.reply('❌ Murojaat bekor qilindi.', MAIN_MENU);
+  return ctx.reply('🚪 Tizimdan chiqdingiz. Fuqaro rejimiga qaytdingiz.', MAIN_MENU);
+});
+
+bot.hears('❌ Bekor qilish', (ctx) => {
+  const isAdmin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
+  ctx.session = { step: 'idle' };
+  return ctx.reply('❌ Amal bekor qilindi.', isAdmin ? STAFF_MENU : MAIN_MENU);
 });
 
 bot.hears('📋 Mening murojaatlarim', (ctx) => {
@@ -74,6 +142,47 @@ bot.hears('📋 Mening murojaatlarim', (ctx) => {
   }).join('\n\n');
   
   return ctx.reply(`Sizning murojaatlaringiz:\n\n${text}`, MAIN_MENU);
+});
+
+bot.hears('📋 Menga biriktirilgan vazifalar', (ctx) => {
+  const admin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
+  if (!admin) return ctx.reply("Siz xodim emassiz!");
+
+  const assigned = db.prepare(`SELECT * FROM murojaats WHERE assigned_admin_id = ? AND status IN ('idle', 'in_progress') ORDER BY created_at ASC LIMIT 10`).all(admin.id);
+  
+  if (!assigned || assigned.length === 0) {
+    return ctx.reply("Sizda yangi yoki jarayondagi vazifalar yo'q. 🎉", STAFF_MENU);
+  }
+
+  return ctx.reply("Sizga biriktirilgan vazifalar:", Markup.inlineKeyboard(
+    assigned.map(m => [Markup.button.callback(`📋 #${m.id} - ${CATEGORIES[m.category] || m.category} qamrovi`, `viewtask_${m.id}`)])
+  ));
+});
+
+bot.action(/viewtask_(\d+)/, async (ctx) => {
+  const mId = ctx.match[1];
+  await ctx.answerCbQuery();
+
+  const admin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
+  if (!admin) return;
+
+  const m = db.prepare(`SELECT * FROM murojaats WHERE id = ? AND assigned_admin_id = ?`).get(mId, admin.id);
+  if (!m) return ctx.reply(`Bunday vazifa topilmadi yoki sizga biriktirilmagan.`);
+
+  const txt = `📌 Vazifa #${m.id}\n📁 Yo'nalish: ${CATEGORIES[m.category] || m.category}\n` +
+              `📍 Manzil: ${m.mikrorayon} ${m.address}\n\nQuyidagi tugmani bosib bajaring:`;
+  return ctx.reply(txt, Markup.inlineKeyboard([[Markup.button.callback(`✅ Bajarildi qilib belgilash`, `complete_${m.id}`)]]));
+});
+
+bot.action(/complete_(\d+)/, async (ctx) => {
+  const mId = ctx.match[1];
+  await ctx.answerCbQuery();
+
+  const admin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
+  if (!admin) return ctx.reply("Siz xodim emassiz!");
+
+  ctx.session = { step: 'awaiting_staff_proof_photo', murojaat_id: mId };
+  return ctx.reply(`Vazifa #${mId} bajarilganligini isbotlash uchun rasmni yuboring yoki bekor qilish uchun pastdagi tugmani bosing:`, CANCEL_KB);
 });
 
 bot.hears('📝 Murojaat qoldirish', (ctx) => {
@@ -113,12 +222,25 @@ bot.action(/cat_(.+)/, async (ctx) => {
       if (mahallas[i + 1]) row.push(Markup.button.callback(mahallas[i + 1].name, `mah_${mahallas[i + 1].id}`));
       buttons.push(row);
     }
-    
+    buttons.push([Markup.button.callback('🔙 Orqaga', 'back_to_category')]);
     return ctx.reply("Mahallangizni tanlang:", Markup.inlineKeyboard(buttons));
   } else {
     // No mahallas exist in DB
     return ctx.reply("Hozircha tizimda MFYlar ro'yxati yo'q, iltimos keyinroq urinib ko'ring.", MAIN_MENU);
   }
+});
+
+bot.action('back_to_category', async (ctx) => {
+  ctx.session = { step: 'awaiting_category' };
+  await ctx.answerCbQuery();
+  return ctx.editMessageText(
+    "Qaysi yo'nalish bo'yicha murojaat qoldirmoqchisiz?",
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🔥 Gaz', 'cat_gaz'), Markup.button.callback('💧 Suv', 'cat_suv')],
+      [Markup.button.callback('⚡ Elektr', 'cat_elektr')],
+      [Markup.button.callback('🏗 Obodonlashtirish', 'cat_obodonlashtirish'), Markup.button.callback('📌 Boshqa', 'cat_boshqa')]
+    ])
+  );
 });
 
 bot.action(/mah_(.+)/, async (ctx) => {
@@ -141,18 +263,40 @@ bot.action(/mah_(.+)/, async (ctx) => {
     ctx.session.step = 'awaiting_building';
     const buttons = [];
     for (let i = 0; i < buildings.length; i += 2) {
-      const row = [Markup.button.callback(`${buildings[i].name_or_number} (${buildings[i].type === 'apartment' ? 'Ko\'p qavatli uylar' : 'Xonadon'})`, `bld_${buildings[i].id}`)];
+      const b1TypeStr = buildings[i].type === 'apartment' ? "Ko'p qavatli" : (buildings[i].type === 'house' ? 'Xonadon' : 'Boshqa');
+      const row = [Markup.button.callback(`${buildings[i].name_or_number} (${b1TypeStr})`, `bld_${buildings[i].id}`)];
       if (buildings[i + 1]) {
-        row.push(Markup.button.callback(`${buildings[i + 1].name_or_number} (${buildings[i + 1].type === 'apartment' ? 'K. qavatli uylar' : 'Xonadon'})`, `bld_${buildings[i + 1].id}`));
+        const b2TypeStr = buildings[i + 1].type === 'apartment' ? "K. qavatli" : (buildings[i + 1].type === 'house' ? 'Xonadon' : 'Boshqa');
+        row.push(Markup.button.callback(`${buildings[i + 1].name_or_number} (${b2TypeStr})`, `bld_${buildings[i + 1].id}`));
       }
       buttons.push(row);
     }
     buttons.push([Markup.button.callback("📌 Boshqa bino (Qo'lda kiritish)", 'bld_other')]);
+    buttons.push([Markup.button.callback('🔙 Orqaga', 'back_to_mahalla')]);
     return ctx.reply("Uyingiz yoki binoni tanlang:", Markup.inlineKeyboard(buttons));
   } else {
     // No buildings yet
     ctx.session.step = 'awaiting_address_desc';
     return ctx.reply("Uy raqamingizni va muammo tavsifini yozing:", CANCEL_KB);
+  }
+});
+
+bot.action('back_to_mahalla', async (ctx) => {
+  ctx.session.step = 'awaiting_mahalla';
+  await ctx.answerCbQuery();
+  
+  const mahallas = db.prepare('SELECT * FROM mahallas ORDER BY name ASC').all();
+  if (mahallas.length > 0) {
+    const buttons = [];
+    for (let i = 0; i < mahallas.length; i += 2) {
+      const row = [Markup.button.callback(mahallas[i].name, `mah_${mahallas[i].id}`)];
+      if (mahallas[i + 1]) row.push(Markup.button.callback(mahallas[i + 1].name, `mah_${mahallas[i + 1].id}`));
+      buttons.push(row);
+    }
+    buttons.push([Markup.button.callback('🔙 Orqaga', 'back_to_category')]);
+    return ctx.editMessageText("Mahallangizni tanlang:", Markup.inlineKeyboard(buttons));
+  } else {
+    return ctx.editMessageText("Hozircha tizimda MFYlar ro'yxati yo'q, iltimos keyinroq urinib ko'ring.");
   }
 });
 
@@ -204,6 +348,19 @@ bot.on('text', (ctx, next) => {
     ctx.session.murojaat.address = text;
     // Set mikrorayon to the mahalla name if it exists so table shows it nicely
     if (ctx.session.murojaat.mahalla_name) ctx.session.murojaat.mikrorayon = ctx.session.murojaat.mahalla_name;
+    
+    ctx.session.step = 'awaiting_photos';
+    ctx.session.murojaat.photos = [];
+    return ctx.reply(
+      "Muammo rasmlarini yuboring (ko'pi bilan 2 ta) yoki o'tkazib yuborish uchun pastdagi tugmani bosing:", 
+      Markup.keyboard([
+        ['⏭ O\'tkazib yuborish'],
+        ['❌ Bekor qilish']
+      ]).resize()
+    );
+  }
+  
+  if (ctx.session.step === 'awaiting_photos' && (text === "⏭ O'tkazib yuborish" || text === "✅ Yuborish")) {
     return askPhone(ctx);
   }
   
@@ -217,6 +374,62 @@ bot.on('text', (ctx, next) => {
   }
 
   return next();
+});
+
+bot.on('photo', async (ctx) => {
+  ctx.session = ctx.session || {};
+  
+  if (ctx.session.step === 'awaiting_staff_proof_photo') {
+    const photos = ctx.message.photo;
+    const largestPhoto = photos[photos.length - 1];
+    
+    const savedPath = await downloadAndCompressTelegramPhoto(ctx, largestPhoto.file_id);
+    if (!savedPath) return ctx.reply("❌ Rasmni yuklashda xatolik. Qayta urinib ko'ring.");
+    
+    const mId = ctx.session.murojaat_id;
+    db.prepare(`UPDATE murojaats SET status = 'completed', staff_proof_image = ? WHERE id = ?`).run(savedPath, mId);
+    
+    ctx.reply(`✅ Vazifa #${mId} muvaffaqiyatli "Bajarildi" deb belgilandi!`, STAFF_MENU);
+    ctx.session = { step: 'idle' };
+
+    const m = db.prepare(`SELECT m.*, u.telegram_id AS u_tg_id FROM murojaats m JOIN users u ON m.user_id = u.id WHERE m.id = ?`).get(mId);
+    if (m && m.u_tg_id && m.source === 'telegram') {
+      try {
+        const text = `🎉 Sizning #${mId} raqamli murojaatingiz "Bajarildi" deb belgilandi!`;
+        const sysPath = path.join(__dirname, '..', 'public', savedPath);
+        if (fs.existsSync(sysPath)) {
+           await bot.telegram.sendPhoto(m.u_tg_id, { source: fs.createReadStream(sysPath) }, { caption: text });
+        } else {
+           await bot.telegram.sendMessage(m.u_tg_id, text);
+        }
+      } catch (err) {
+        console.error("Foydalanuvchiga xabar yuborishda xatolik:", err);
+      }
+    }
+    return;
+  }
+
+  if (ctx.session.step === 'awaiting_photos') {
+    const photos = ctx.message.photo;
+    const largestPhoto = photos[photos.length - 1]; // last one is the largest resolution
+    
+    const savedPath = await downloadAndCompressTelegramPhoto(ctx, largestPhoto.file_id);
+    if (savedPath) {
+      ctx.session.murojaat.photos = ctx.session.murojaat.photos || [];
+      ctx.session.murojaat.photos.push(savedPath);
+      
+      if (ctx.session.murojaat.photos.length >= 2) {
+        await ctx.reply("✅ 2 ta rasm qabul qilindi.");
+        return askPhone(ctx);
+      } else {
+        return ctx.reply("✅ 1-rasm qabul qilindi. Yana rasmingiz bo'lsa yuboring yoki quyidagi tugmani bosing.", 
+          Markup.keyboard([['✅ Yuborish'], ['❌ Bekor qilish']]).resize()
+        );
+      }
+    } else {
+      return ctx.reply("❌ Rasmni yuklashda xatolik yuz berdi. Boshqa rasm yuboring yoki o'tkazib yuboring.");
+    }
+  }
 });
 
 bot.on('contact', (ctx) => {
@@ -261,15 +474,21 @@ function saveMurojaat(ctx, phone) {
   }
 
   const stmt = db.prepare(`
-    INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, status, source) 
-    VALUES (?, ?, ?, ?, ?, 'idle', 'telegram')
+    INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, status, source, user_image1, user_image2) 
+    VALUES (?, ?, ?, ?, ?, 'idle', 'telegram', ?, ?)
   `);
+  
+  const img1 = (m.photos && m.photos.length > 0) ? m.photos[0] : null;
+  const img2 = (m.photos && m.photos.length > 1) ? m.photos[1] : null;
+
   const info = stmt.run(
     userRow.id, 
     m.building_id || null, 
     m.category, 
     m.mikrorayon || '', 
-    m.address || ''
+    m.address || '',
+    img1,
+    img2
   );
   
   ctx.session.step = 'idle';

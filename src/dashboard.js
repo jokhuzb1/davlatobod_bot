@@ -15,6 +15,21 @@ const rateLimit = require('express-rate-limit');
 const loginLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, message: { error: "Xavfsizlik tizimi: Ko'p urinishlar. Iltimos 15 daqiqadan so'ng qayta urining." } });
 const publicLimiter = rateLimit({ windowMs: 10*60*1000, max: 5, message: { error: "Xavfsizlik: Juda ko'p murojaat yubordingiz. Birozdan so'ng qayta urining." } });
 
+const multer = require('multer');
+const sharp = require('sharp');
+const path = require('path');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+
+async function compressAndSaveImage(buffer) {
+  const filename = Date.now() + '-' + Math.round(Math.random() * 1E9) + '.jpg';
+  const filepath = path.join(__dirname, '..', 'public', 'uploads', filename);
+  await sharp(buffer)
+    .resize({ width: 800, withoutEnlargement: true })
+    .jpeg({ quality: 70 })
+    .toFile(filepath);
+  return '/uploads/' + filename;
+}
+
 // -------------------------------------------------------------
 // 1. Authentication
 // -------------------------------------------------------------
@@ -45,11 +60,20 @@ router.get('/public/buildings', (req, res) => {
   res.json(db.prepare('SELECT * FROM buildings WHERE mahalla_id = ? ORDER BY name_or_number ASC').all(mahalla_id));
 });
 
-router.post('/murojaats/public', publicLimiter, (req, res) => {
+router.post('/murojaats/public', publicLimiter, upload.array('images', 2), async (req, res) => {
   const { phone, full_name, category, building_id, mikrorayon, address, source } = req.body;
   if (!phone || !full_name || !category) return res.status(400).json({ error: "F.I.Sh, Telefon va Yo'nalish kiritilishi shart." });
 
   try {
+    let img1 = null;
+    let img2 = null;
+    if (req.files && req.files.length > 0) {
+      img1 = await compressAndSaveImage(req.files[0].buffer);
+      if (req.files.length > 1) {
+        img2 = await compressAndSaveImage(req.files[1].buffer);
+      }
+    }
+
     // Treat phone as unique enough identifier for non-telegram users
     let user = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
     if (!user) {
@@ -61,14 +85,14 @@ router.post('/murojaats/public', publicLimiter, (req, res) => {
     }
     
     const stmt = db.prepare(`
-      INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, source, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'idle')
+      INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, source, status, user_image1, user_image2)
+      VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)
     `);
     
     // source could be 'web' or 'call'
     const finalSource = ['web', 'call'].includes(source) ? source : 'web';
     
-    const info = stmt.run(user.id, building_id || null, category, mikrorayon || '', address || '', finalSource);
+    const info = stmt.run(user.id, building_id || null, category, mikrorayon || '', address || '', finalSource, img1, img2);
     res.json({ success: true, id: info.lastInsertRowid });
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -139,7 +163,7 @@ router.get('/murojaats', authenticate, (req, res) => {
   res.json(murojaats);
 });
 
-router.patch('/murojaats/:id/status', authenticate, async (req, res) => {
+router.patch('/murojaats/:id/status', authenticate, upload.single('proof_image'), async (req, res) => {
   const id = req.params.id;
   const { status, comment, assigned_admin_id } = req.body;
   const adminId = req.admin.id;
@@ -155,25 +179,46 @@ router.patch('/murojaats/:id/status', authenticate, async (req, res) => {
 
   const final_assigned = assigned_admin_id !== undefined ? assigned_admin_id : m.assigned_admin_id;
 
-  db.prepare('UPDATE murojaats SET status = ?, assigned_admin_id = ? WHERE id = ?').run(status, final_assigned || null, id);
-
-  const STATUS_LABELS = {
-    'idle': 'Kutilmoqda',
-    'in_progress': 'Jarayonda',
-    'completed': 'Bajarildi',
-    'rejected': 'Rad etildi'
-  };
-
-  let notifyMessage = `🔔 Murojaatingiz holati o'zgardi:\n\nID: #${m.id}\nYangi Holat: ${STATUS_LABELS[status] || status}\n`;
-  if (comment) notifyMessage += `\n💬 Izoh: ${comment}`;
-  
+  let proofImg = m.staff_proof_image;
   try {
-    await bot.telegram.sendMessage(m.user_id, notifyMessage);
-  } catch (err) {
-    console.error(`Status update notification failed for ${m.user_id}:`, err.message);
-  }
+    if (req.file) {
+      proofImg = await compressAndSaveImage(req.file.buffer);
+    }
 
-  res.json({ success: true });
+    if (status === 'completed' && !proofImg) {
+      return res.status(400).json({ error: "Bajarilgan holatga o'tkazish uchun isbot rasm yuklash majburiy." });
+    }
+
+    db.prepare('UPDATE murojaats SET status = ?, assigned_admin_id = ?, staff_proof_image = ? WHERE id = ?')
+      .run(status, final_assigned || null, proofImg, id);
+
+    const STATUS_LABELS = {
+      'idle': 'Kutilmoqda',
+      'in_progress': 'Jarayonda',
+      'completed': 'Bajarildi',
+      'rejected': 'Rad etildi'
+    };
+
+    let notifyMessage = `🔔 Murojaatingiz holati o'zgardi:\n\nID: #${m.id}\nYangi Holat: ${STATUS_LABELS[status] || status}\n`;
+    if (comment) notifyMessage += `\n💬 Izoh: ${comment}`;
+    
+    try {
+      if (status === 'completed' && proofImg) {
+        // Find public full path
+        const fullPath = path.join(__dirname, '..', 'public', proofImg);
+        await bot.telegram.sendPhoto(m.user_id, { source: fullPath }, { caption: notifyMessage });
+      } else {
+        await bot.telegram.sendMessage(m.user_id, notifyMessage);
+      }
+    } catch (err) {
+      console.error(`Status update notification failed for ${m.user_id}:`, err.message);
+    }
+
+    res.json({ success: true, proof_image: proofImg });
+  } catch (err) {
+    console.error('Error updating status:', err);
+    res.status(500).json({ error: 'Serverda xatolik yuz berdi' });
+  }
 });
 
 // -------------------------------------------------------------
@@ -262,7 +307,25 @@ router.get('/admin-stats', authenticate, (req, res) => {
            rating
        };
    });
-   res.json(result);
+   
+   result.sort((a, b) => b.completed - a.completed);
+
+   const probBuildings = db.prepare(`
+     SELECT b.id, b.name_or_number, m.name as mahalla_name, COUNT(mur.id) as issues_count, GROUP_CONCAT(DISTINCT mur.category) as categories
+     FROM buildings b
+     JOIN mahallas m ON b.mahalla_id = m.id
+     JOIN murojaats mur ON mur.building_id = b.id
+     WHERE mur.status IN ('idle', 'in_progress') ${dateClause.replace(/created_at/g, 'mur.created_at')}
+     GROUP BY b.id
+     ORDER BY issues_count DESC
+     LIMIT 10
+   `).all(...params);
+
+   res.json({
+       staffPerformers: result,
+       problematicBuildings: probBuildings,
+       categoryBreakdown: totalsMap
+   });
 });
 
 // -------------------------------------------------------------

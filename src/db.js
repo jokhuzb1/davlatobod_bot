@@ -55,9 +55,14 @@ function initDb() {
     );
   `);
   
-  // Removed aggressive schema drop logic that destroys `users` and `murojaats` tables on every server reboot
+  // Safely alter existing tables to add columns from later phases
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN assigned_admin_id INTEGER;"); } catch (e) {}
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN user_image1 TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN user_image2 TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN staff_proof_image TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE admins ADD COLUMN telegram_id INTEGER;"); } catch (e) {}
 
-  console.log("Database initialized with Omnichannel schema (users, murojaats).");
+  console.log("Database initialized with Omnichannel schema (users, murojaats, images, admins).");
 }
 
 // Ensure init is run on require

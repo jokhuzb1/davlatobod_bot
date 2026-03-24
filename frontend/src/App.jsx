@@ -48,6 +48,7 @@ function PublicPortal({ onAdminSwitch }) {
   const [submitted, setSubmitted] = useState(false);
   const [mId, setMId] = useState(null);
 
+  const [images, setImages] = useState([]);
   const [form, setForm] = useState({
     full_name: '', phone: '', category: '', mahalla_id: '', building_id: '', mikrorayon: '', address: '', apartment_number: ''
   });
@@ -78,13 +79,23 @@ function PublicPortal({ onAdminSwitch }) {
       if (form.apartment_number) addr += `Xonadon: ${form.apartment_number}, `;
       addr += `Qo'shimcha izoh: ${form.address}`;
 
-      const res = await api.post('/murojaats/public', {
-        ...form, mikrorayon: mName, address: addr, source: 'web'
+      const formData = new FormData();
+      Object.keys(form).forEach(key => formData.append(key, form[key]));
+      formData.append('mikrorayon', mName);
+      formData.set('address', addr);
+      formData.append('source', 'web');
+
+      for (let i = 0; i < images.length; i++) {
+        formData.append('images', images[i]);
+      }
+
+      const res = await api.post('/murojaats/public', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
       });
       setMId(res.data.id);
       setSubmitted(true);
     } catch(err) {
-      alert("Xatolik: Barcha majburiy maydonlarni to'ldiring.");
+      alert("Xatolik: Barcha majburiy maydonlarni to'ldiring. (Rasm hajmi juda katta bo'lishi mumkin)");
     } finally {
       setLoading(false);
     }
@@ -152,7 +163,7 @@ function PublicPortal({ onAdminSwitch }) {
              <label>Binongiz (Uy/Xonadon)</label>
              <select className="status-select" value={form.building_id} onChange={e=>setForm({...form, building_id: e.target.value})}>
                <option value="">-- Tanlang yoki Bo'sh qoldiring --</option>
-               {buildings.map(b => <option key={b.id} value={b.id}>{b.name_or_number} - {b.type === 'apartment' ? "Dom":"Hovli"}</option>)}
+               {buildings.map(b => <option key={b.id} value={b.id}>{b.name_or_number} - {b.type === 'apartment' ? "Dom" : (b.type === 'house' ? "Hovli" : "Boshqa")}</option>)}
              </select>
           </div>
           <div className="input-group" style={{gridColumn: '1 / -1'}}>
@@ -169,6 +180,19 @@ function PublicPortal({ onAdminSwitch }) {
                onChange={e=>setForm({...form, address: e.target.value})}
                required
              />
+          </div>
+          <div className="input-group" style={{gridColumn: '1 / -1'}}>
+             <label>Rasmlar yuborish (ko'pi bilan 2 ta, ixtiyoriy)</label>
+             <input type="file" multiple accept="image/*" onChange={e => {
+                const files = Array.from(e.target.files);
+                if (files.length > 2) {
+                   alert("Faqatgina 2 ta rasm yuklash mumkin.");
+                   e.target.value = '';
+                   setImages([]);
+                } else {
+                   setImages(files);
+                }
+             }} />
           </div>
           <button type="submit" className="btn-primary" disabled={loading} style={{gridColumn: '1 / -1', marginTop: '1rem', display:'flex', justifyContent:'center', gap:'8px'}}>
              {loading ? <Loader2 className="spinner" /> : <><Send size={18}/> Yuborish</>}
@@ -337,11 +361,11 @@ function MurojaatlarTab({ auth, showToast }) {
     } catch (err) {} finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchMurojaats(); }, [filterCat, filterMahalla, filterDateRange]);
+  useEffect(() => { fetchMurojaats(); }, [filterCat, filterMahalla, filterDateRange, startDate, endDate]);
 
-  const handleUpdate = async (id, status, comment, assigned_admin_id) => {
+  const handleUpdate = async (id, formData) => {
     try {
-      await api.patch(`/murojaats/${id}/status`, { status, comment, assigned_admin_id });
+      await api.patch(`/murojaats/${id}/status`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
       showToast("Holat saqlandi!"); setSelectedMurojaat(null); fetchMurojaats();
     } catch (err) { alert(err.response?.data?.error || "Xatolik."); }
   };
@@ -489,7 +513,7 @@ function ManualMurojaatModal({ onClose, onSave }) {
               <label>Bino / Uy</label>
               <select className="status-select" value={form.building_id} onChange={e=>setForm({...form, building_id:e.target.value})}>
                 <option value="">-- Tanlang --</option>
-                {buildings.map(b => <option key={b.id} value={b.id}>{b.name_or_number} ({b.type==='apartment'?"Dom":"Hovli"})</option>)}
+                {buildings.map(b => <option key={b.id} value={b.id}>{b.name_or_number} ({b.type==='apartment'?"Dom":(b.type==='house'?"Hovli":"Boshqa")})</option>)}
               </select>
            </div>
 
@@ -688,7 +712,7 @@ function HududlarTab({ auth, showToast }) {
                     )}
                   </div>
                   {selectedMahalla.id === 'all' && b.mahalla_name && <div style={{fontSize:'0.85rem', color:'var(--text-light)', marginTop:'8px'}}><Map size={12} style={{verticalAlign:'text-bottom'}}/> {b.mahalla_name}</div>}
-                  <div style={{fontSize:'0.9rem', color:'var(--text-gray)', marginTop:'6px'}}>Turi: {b.type === 'apartment' ? "Ko'p qavatli" : 'Hovli'}</div>
+                  <div style={{fontSize:'0.9rem', color:'var(--text-gray)', marginTop:'6px'}}>Turi: {b.type === 'apartment' ? "Ko'p qavatli" : (b.type === 'house' ? 'Hovli' : 'Boshqa')}</div>
                   
                   {/* Glowing Iconic HUD */}
                   {renderBuildingIcons(b.active_categories)}
@@ -721,6 +745,7 @@ function HududlarTab({ auth, showToast }) {
                    <select className="status-select" value={bForm.type} onChange={e=>setBForm({...bForm, type: e.target.value})}>
                      <option value="apartment">Ko'p qavatli uy (Dom)</option>
                      <option value="house">Xonadon / Hovli</option>
+                     <option value="other">Boshqa (Tashkilot, obyekt...)</option>
                    </select>
                  </div>
                  <div className="input-group" style={{gridColumn: '1 / -1'}}>
@@ -802,9 +827,9 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
       onBack();
     } catch(e) { alert("Xatolik"); }
   };
-  const handleHistoryUpdate = async (id, status, comment, assigned_admin_id) => {
+  const handleHistoryUpdate = async (id, formData) => {
     try {
-      await api.patch(`/murojaats/${id}/status`, { status, comment, assigned_admin_id });
+      await api.patch(`/murojaats/${id}/status`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
       showToast("Holat saqlandi!");
       setSelectedHistory(null);
       fetchBuildingData();
@@ -862,7 +887,7 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
               </div>
               <div style={{display:'flex', justifyContent:'space-between', fontSize:'1rem'}}>
                 <span style={{color:'var(--text-gray)', display:'flex', gap:'8px'}}><Building size={18}/> Bino turi:</span> 
-                <b>{building.type === 'apartment' ? "Ko'p qavatli uy" : "Hovli / Xonadon"}</b>
+                <b>{building.type === 'apartment' ? "Ko'p qavatli uy" : (building.type === 'house' ? "Hovli / Xonadon" : "Boshqa boshqarma/obyekt")}</b>
               </div>
               {building.type === 'apartment' && (
                 <>
@@ -940,6 +965,7 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
                  <select className="status-select" value={form.type} onChange={e=>setForm({...form, type: e.target.value})}>
                    <option value="apartment">Ko'p qavatli uy (Dom)</option>
                    <option value="house">Xonadon / Hovli</option>
+                   <option value="other">Boshqa (Tashkilot, obyekt...)</option>
                  </select>
                </div>
                <div className="input-group" style={{gridColumn: '1 / -1'}}>
@@ -974,7 +1000,7 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
 }
 
 function StatsTab({ auth }) { 
-  const [stats, setStats] = useState([]);
+  const [stats, setStats] = useState({ staffPerformers: [], problematicBuildings: [], categoryBreakdown: {} });
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState('barchasi');
   const [start, setStart] = useState('');
@@ -1002,7 +1028,7 @@ function StatsTab({ auth }) {
     let url = '/admin-stats?';
     if (start) url += `startDate=${start}&`;
     if (end) url += `endDate=${end}`;
-    api.get(url).then(r => setStats(r.data)).catch(console.error).finally(()=>setLoading(false));
+    api.get(url).then(r => setStats(r.data || { staffPerformers: [], problematicBuildings: [], categoryBreakdown: {} })).catch(console.error).finally(()=>setLoading(false));
   };
 
   useEffect(() => { fetchStats(); }, [start, end]);
@@ -1020,7 +1046,7 @@ function StatsTab({ auth }) {
   return (
     <div className="fade-in" style={{padding:'0 1.5rem 2rem 1.5rem'}}>
       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem', flexWrap:'wrap', gap:'1rem'}}>
-        <h2 style={{margin:0}}>Xodimlar Statistikasi va Faolligi</h2>
+        <h2 style={{margin:0}}>Xodimlar & Tizim Statistikasi</h2>
         <div style={{display:'flex', gap:'8px', alignItems:'center'}}>
           <select className="status-select" style={{width:'180px', marginBottom:0}} value={dateRange} onChange={e=>setDateRange(e.target.value)}>
             <option value="barchasi">Barcha vaqt</option>
@@ -1040,29 +1066,82 @@ function StatsTab({ auth }) {
         </div>
       </div>
       
-      <div className="data-table-card">
-         {loading ? <div style={{padding:'4rem',textAlign:'center'}}><Loader2 className="spinner spinner-dark" size={32}/></div> : (
-           <table className="data-table">
-             <thead>
-               <tr><th>Xodim</th><th>Mutaxassislik</th><th>Yangi/Jarayonda</th><th>Bajarilgan</th><th>Jami Biriktirilgan</th><th>O'rtacha Me'yor</th><th>Faollik Darajasi</th></tr>
-             </thead>
-             <tbody>
-               {stats.map(s => (
-                 <tr key={s.id}>
-                   <td style={{fontWeight:600}}>@{s.username}</td>
-                   <td><span className="badge badge-idle" style={{background:'#f1f5f9', color:'#475569'}}>{s.role}</span></td>
-                   <td style={{color:'#d97706', fontWeight:600}}>{s.active} ta</td>
-                   <td style={{color:'#059669', fontWeight:600}}>{s.completed} ta</td>
-                   <td style={{color:'var(--text-gray)'}}>{s.totalAssigned} ta</td>
-                   <td style={{color:'var(--text-light)'}}>~ {s.expected} ta</td>
-                   <td>{getRatingBadge(s.rating)}</td>
-                 </tr>
-               ))}
-               {stats.length===0 && <tr><td colSpan="7" style={{textAlign:'center', padding:'2rem'}}>Ma'lumot topilmadi</td></tr>}
-             </tbody>
-           </table>
-         )}
-      </div>
+      {loading ? <div style={{padding:'4rem',textAlign:'center'}}><Loader2 className="spinner spinner-dark" size={32}/></div> : (
+        <div style={{display:'flex', flexDirection:'column', gap:'2rem'}}>
+          
+          <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))', gap:'1rem'}}>
+             <div className="data-table-card" style={{padding:'1.5rem', display:'flex', flexDirection:'column', alignItems:'center', background:'#fff7ed'}}>
+                 <div style={{fontSize:'2.5rem', fontWeight:700, color:'#c2410c'}}>{stats.categoryBreakdown?.gaz || 0} ta</div>
+                 <div style={{color:'#c2410c', fontWeight:500}}>🔥 Gaz Muammosi</div>
+             </div>
+             <div className="data-table-card" style={{padding:'1.5rem', display:'flex', flexDirection:'column', alignItems:'center', background:'#f0f9ff'}}>
+                 <div style={{fontSize:'2.5rem', fontWeight:700, color:'#0284c7'}}>{stats.categoryBreakdown?.suv || 0} ta</div>
+                 <div style={{color:'#0284c7', fontWeight:500}}>💧 Suv Muammosi</div>
+             </div>
+             <div className="data-table-card" style={{padding:'1.5rem', display:'flex', flexDirection:'column', alignItems:'center', background:'#fef3c7'}}>
+                 <div style={{fontSize:'2.5rem', fontWeight:700, color:'#d97706'}}>{stats.categoryBreakdown?.elektr || 0} ta</div>
+                 <div style={{color:'#d97706', fontWeight:500}}>⚡ Elektr Muammosi</div>
+             </div>
+             <div className="data-table-card" style={{padding:'1.5rem', display:'flex', flexDirection:'column', alignItems:'center', background:'#f0fdf4'}}>
+                 <div style={{fontSize:'2.5rem', fontWeight:700, color:'#16a34a'}}>{(stats.categoryBreakdown?.obodonlashtirish || 0) + (stats.categoryBreakdown?.boshqa || 0)} ta</div>
+                 <div style={{color:'#16a34a', fontWeight:500}}>🗑 Obod. va Boshqa</div>
+             </div>
+          </div>
+
+          <div style={{display:'flex', gap:'2rem', flexWrap:'wrap', alignItems:'flex-start'}}>
+            <div className="data-table-card" style={{flex:'1 1 500px'}}>
+              <h3 style={{margin:'0', padding:'1.5rem', borderBottom:'1px solid var(--border)'}}>🏆 Reyting (Eng ko'p hal etganlar)</h3>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Xodim</th><th>Yangi/Jarayon</th><th>Bajarildi</th><th>Me'yor</th><th>Bahosi</th></tr>
+                </thead>
+                <tbody>
+                  {(stats.staffPerformers || []).map((s, idx) => (
+                    <tr key={s.id}>
+                      <td style={{fontWeight:600}}><span style={{color:'var(--text-gray)'}}>{idx+1}.</span> @{s.username}</td>
+                      <td style={{color:'#d97706', fontWeight:600}}>{s.active} ta</td>
+                      <td style={{color:'#059669', fontWeight:600}}>{s.completed} ta</td>
+                      <td style={{color:'var(--text-light)'}}>~{s.expected}</td>
+                      <td>{getRatingBadge(s.rating)}</td>
+                    </tr>
+                  ))}
+                  {(!stats.staffPerformers || stats.staffPerformers.length===0) && <tr><td colSpan="5" style={{textAlign:'center', padding:'2rem'}}>Ma'lumot topilmadi</td></tr>}
+                </tbody>
+              </table>
+            </div>
+
+             <div className="data-table-card" style={{flex:'1 1 400px'}}>
+              <h3 style={{margin:'0', padding:'1.5rem', borderBottom:'1px solid var(--border)'}}>🔴 Eng Problematik Binolar (Top 10)</h3>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Bino</th><th>Mahalla</th><th>Muammolar</th></tr>
+                </thead>
+                <tbody>
+                  {(stats.problematicBuildings || []).map(b => (
+                    <tr key={b.id}>
+                      <td style={{fontWeight:600, color:'var(--text-dark)'}}>{b.name_or_number}</td>
+                      <td style={{color:'var(--text-gray)'}}>{b.mahalla_name}</td>
+                      <td>
+                        <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                          <span className="badge badge-rejected" style={{fontWeight:700}}>{b.issues_count} ta</span>
+                          <span style={{fontSize:'1.1rem'}}>
+                             {b.categories?.includes('gaz') ? '🔥 ' : ''}
+                             {b.categories?.includes('suv') ? '💧 ' : ''}
+                             {b.categories?.includes('elektr') ? '⚡ ' : ''}
+                             {b.categories?.includes('obodonlashtirish') || b.categories?.includes('boshqa') ? '🗑 ' : ''}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {(!stats.problematicBuildings || stats.problematicBuildings.length===0) && <tr><td colSpan="3" style={{textAlign:'center', padding:'2rem'}}>Barcha binolar tinch! 🎉</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      )}
     </div>
   );
 }
@@ -1145,6 +1224,7 @@ function UpdateModal({ murojaat, onClose, onSave, auth }) {
   const [status, setStatus] = useState(murojaat.status);
   const [comment, setComment] = useState('');
   const [assigned, setAssigned] = useState(murojaat.assigned_admin_id || '');
+  const [proofImage, setProofImage] = useState(null);
   const [staff, setStaff] = useState([]);
 
   useEffect(() => {
@@ -1153,11 +1233,33 @@ function UpdateModal({ murojaat, onClose, onSave, auth }) {
 
   const isAssignedToOther = murojaat.assigned_admin_id && murojaat.assigned_admin_id !== auth.id && auth.role !== 'SuperAdmin';
 
+  const handleSave = () => {
+    if (status === 'completed' && !proofImage && !murojaat.staff_proof_image) {
+      alert("Bajarilgan holatiga o'tkazish uchun isbot rasm yuklash majburiy.");
+      return;
+    }
+    const formData = new FormData();
+    formData.append('status', status);
+    formData.append('comment', comment);
+    if (assigned) formData.append('assigned_admin_id', assigned);
+    if (proofImage) formData.append('proof_image', proofImage);
+    
+    onSave(murojaat.id, formData);
+  };
+
   return (
     <div className="modal-overlay">
       <div className="modal fade-in">
         <div className="modal-header"><h3>Murojaat #{murojaat.id}</h3><button onClick={onClose} className="close-btn"><XCircle size={18}/></button></div>
         <div className="modal-body" style={{display:'flex', flexDirection:'column', gap:'1rem'}}>
+          {(murojaat.user_image1 || murojaat.user_image2 || murojaat.staff_proof_image) && (
+            <div style={{display:'flex', gap:'8px', overflowX:'auto', paddingBottom:'8px'}}>
+              {murojaat.user_image1 && <img src={murojaat.user_image1} alt="Fuqaro yuborgan" style={{height:'100px', objectFit:'contain', borderRadius:'8px', cursor:'pointer', border:'1px solid var(--border)'}} onClick={()=>window.open(murojaat.user_image1, '_blank')}/>}
+              {murojaat.user_image2 && <img src={murojaat.user_image2} alt="Fuqaro yuborgan" style={{height:'100px', objectFit:'contain', borderRadius:'8px', cursor:'pointer', border:'1px solid var(--border)'}} onClick={()=>window.open(murojaat.user_image2, '_blank')}/>}
+              {murojaat.staff_proof_image && <img src={murojaat.staff_proof_image} alt="Bajarildi isboti" style={{height:'100px', objectFit:'contain', borderRadius:'8px', border:'2px solid var(--primary)', cursor:'pointer'}} onClick={()=>window.open(murojaat.staff_proof_image, '_blank')} title="Xodim isbot rasmi"/>}
+            </div>
+          )}
+
           <div className="input-group" style={{marginBottom:0}}>
              <label>Mas'ul xodim</label>
              <select className="status-select" value={assigned} onChange={e=>setAssigned(e.target.value)} disabled={isAssignedToOther} style={{background: isAssignedToOther ? 'var(--bg-light)' : 'white'}}>
@@ -1173,6 +1275,11 @@ function UpdateModal({ murojaat, onClose, onSave, auth }) {
           <div className="input-group" style={{marginBottom:0}}><label>Izoh</label>
              <textarea className="comment-textarea" value={comment} onChange={e=>setComment(e.target.value)} disabled={isAssignedToOther} style={{background: isAssignedToOther ? 'var(--bg-light)' : 'white'}}/>
           </div>
+
+          <div className="input-group" style={{marginBottom:0, display: status === 'completed' ? 'block' : 'none'}}>
+             <label style={{color:'var(--primary)'}}>Isbot rasm (faqat 'Bajarildi' uchun majburiy)</label>
+             <input type="file" accept="image/*" onChange={e=>setProofImage(e.target.files[0])} disabled={isAssignedToOther} style={{background: isAssignedToOther ? 'var(--bg-light)' : 'white'}} />
+          </div>
           
           <div style={{display:'flex',gap:'1rem', marginTop:'1rem'}}>
             {isAssignedToOther ? (
@@ -1181,7 +1288,7 @@ function UpdateModal({ murojaat, onClose, onSave, auth }) {
                </div>
             ) : (
                <>
-                 <button className="btn-primary" onClick={()=>onSave(murojaat.id, status, comment, assigned || null)}>Saqlash</button>
+                 <button className="btn-primary" onClick={handleSave}>Saqlash</button>
                  <button className="btn-secondary" onClick={onClose}>Bekor</button>
                </>
             )}
@@ -1210,9 +1317,9 @@ function ProfilimTab({ auth }) {
 
   useEffect(() => { fetchProfile(); }, []);
 
-  const handleUpdate = async (id, status, comment, assigned_admin_id) => {
+  const handleUpdate = async (id, formData) => {
     try {
-      await api.patch(`/murojaats/${id}/status`, { status, comment, assigned_admin_id });
+      await api.patch(`/murojaats/${id}/status`, formData, { headers: { 'Content-Type': 'multipart/form-data' }});
       setSelectedMurojaat(null); fetchProfile();
     } catch (err) { alert(err.response?.data?.error || "Xatolik."); }
   };
