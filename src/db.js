@@ -17,16 +17,25 @@ function initDb() {
       full_name TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS bsks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL
+      role TEXT NOT NULL,
+      bsk_id INTEGER,
+      FOREIGN KEY (bsk_id) REFERENCES bsks(id) ON DELETE SET NULL
     );
     
     CREATE TABLE IF NOT EXISTS mahallas (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      bsk_id INTEGER,
+      FOREIGN KEY (bsk_id) REFERENCES bsks(id) ON DELETE SET NULL
     );
     
     CREATE TABLE IF NOT EXISTS buildings (
@@ -61,8 +70,18 @@ function initDb() {
   try { db.exec("ALTER TABLE murojaats ADD COLUMN user_image2 TEXT;"); } catch (e) {}
   try { db.exec("ALTER TABLE murojaats ADD COLUMN staff_proof_image TEXT;"); } catch (e) {}
   try { db.exec("ALTER TABLE admins ADD COLUMN telegram_id INTEGER;"); } catch (e) {}
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN lat REAL;"); } catch (e) {}
+  try { db.exec("ALTER TABLE murojaats ADD COLUMN lng REAL;"); } catch (e) {}
+  try { db.exec("ALTER TABLE bsks ADD COLUMN phone TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE bsks ADD COLUMN address TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE buildings ADD COLUMN bsk_id INTEGER;"); } catch (e) {}
 
-  console.log("Database initialized with Omnichannel schema (users, murojaats, images, admins).");
+  // BSK Migrations
+  try { db.exec("CREATE TABLE IF NOT EXISTS bsks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);"); } catch (e) {}
+  try { db.exec("ALTER TABLE admins ADD COLUMN bsk_id INTEGER REFERENCES bsks(id) ON DELETE SET NULL;"); } catch (e) {}
+  try { db.exec("ALTER TABLE mahallas ADD COLUMN bsk_id INTEGER REFERENCES bsks(id) ON DELETE SET NULL;"); } catch (e) {}
+
+  console.log("Database initialized with Omnichannel schema (users, murojaats, images, admins, geolocation, bsks).");
 }
 
 // Ensure init is run on require

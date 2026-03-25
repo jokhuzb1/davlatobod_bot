@@ -76,6 +76,25 @@
 - [x] Refactored `Building` cards to use responsive `auto-fill` CSS grid configurations to comfortably map 1000+ architectures.
 - [x] Refined UX by defaulting to "All Buildings" upon entry, embedding fixed glowing/grayscale categoric icons into every card, and deploying a "Show Only Problematic" checkbox filter.
 
+## Phase 14: Mahalla Profile & CRUD Management
+- [x] Add protected backend API endpoints to `src/dashboard.js` (POST, PUT, DELETE, GET /stats).
+- [x] Implement UI in `<HududlarTab />` to display specific Mahalla analytics blocks.
+
+## Phase 15: Staff Performance Analytics & Tracking
+- [x] Installed `recharts` for interactive graphing.
+- [x] Created `GET /admins/:id/performance` aggregation backend API.
+- [x] Built rich `<StaffProfile />` React component showcasing filtered assignment histories and output graphs.
+
+## Phase 16: Geolocation & Coordinate Mapping pipeline
+- [x] Mutate DB Schema adding `lat` & `lng` to `murojaats`.
+- [x] Upgrade Telegram `/bot` to accept raw mapped GPS vectors natively.
+- [x] Update `/src/dashboard.js` API bindings to sync geo payload with SQL insert.
+- [x] Revamp React Dashboard to query Geolocation API natively and embed Hyperlinked Map Markers.
+
+## Phase 17: BSK Corporate Structures
+- [ ] Implement `bsks` table and SQLite foreign-key attachments tracking admins/mahallas.
+- [ ] Refactor Web Dashboard APIs and UI menus to provision explicit BSK assignments.
+
 ## File Map
 - `PROJECT_JOURNAL.md`: Dev Log
 - `AGENTS.md`: Agent Instructions

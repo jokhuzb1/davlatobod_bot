@@ -1,0 +1,58 @@
+{
+  "buildings": [
+    {
+      "id": 1,
+      "mahalla_id": 1,
+      "type": "apartment",
+      "name_or_number": "1",
+      "levels": 4,
+      "apartments_count": 2,
+      "residents_count": 54
+    },
+    {
+      "id": 3,
+      "mahalla_id": 2,
+      "type": "apartment",
+      "name_or_number": "1",
+      "levels": 6,
+      "apartments_count": 3,
+      "residents_count": 150
+    },
+    {
+      "id": 4,
+      "mahalla_id": 3,
+      "type": "apartment",
+      "name_or_number": "12",
+      "levels": 6,
+      "apartments_count": 2,
+      "residents_count": 90
+    },
+    {
+      "id": 5,
+      "mahalla_id": 4,
+      "type": "apartment",
+      "name_or_number": "12",
+      "levels": 4,
+      "apartments_count": 2,
+      "residents_count": 50
+    }
+  ],
+  "mahallas": [
+    {
+      "id": 1,
+      "name": "Halqlar do'stligi MFY"
+    },
+    {
+      "id": 2,
+      "name": "G'alaba MFY"
+    },
+    {
+      "id": 3,
+      "name": "Stadion MFY"
+    },
+    {
+      "id": 4,
+      "name": "Navbahor MFY"
+    }
+  ]
+}

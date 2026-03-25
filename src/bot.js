@@ -67,6 +67,11 @@ const CANCEL_KB = Markup.keyboard([
   ['❌ Bekor qilish']
 ]).resize();
 
+const LOCATION_KB = Markup.keyboard([
+  [Markup.button.locationRequest('📍 Joylashuvni yuborish (GPS)')],
+  ['❌ Bekor qilish']
+]).resize();
+
 bot.start((ctx) => {
   const telegramId = ctx.from.id;
   
@@ -112,11 +117,14 @@ bot.command('login', async (ctx) => {
   return ctx.reply(`✅ Xush kelibsiz, ${username}! Endi siz Telegram orqali vazifalarni boshqara olasiz.`, STAFF_MENU);
 });
 
-bot.hears('🚪 Chiqish (Xodim)', (ctx) => {
+const handleLogout = (ctx) => {
   db.prepare('UPDATE admins SET telegram_id = NULL WHERE telegram_id = ?').run(ctx.from.id);
   ctx.session = { step: 'idle' };
   return ctx.reply('🚪 Tizimdan chiqdingiz. Fuqaro rejimiga qaytdingiz.', MAIN_MENU);
-});
+};
+
+bot.command('logout', handleLogout);
+bot.hears('🚪 Chiqish (Xodim)', handleLogout);
 
 bot.hears('❌ Bekor qilish', (ctx) => {
   const isAdmin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
@@ -166,12 +174,50 @@ bot.action(/viewtask_(\d+)/, async (ctx) => {
   const admin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
   if (!admin) return;
 
-  const m = db.prepare(`SELECT * FROM murojaats WHERE id = ? AND assigned_admin_id = ?`).get(mId, admin.id);
+  const m = db.prepare(`
+     SELECT m.*, b.name_or_number, b.type as building_type
+     FROM murojaats m 
+     LEFT JOIN buildings b ON m.building_id = b.id 
+     WHERE m.id = ? AND m.assigned_admin_id = ?
+  `).get(mId, admin.id);
   if (!m) return ctx.reply(`Bunday vazifa topilmadi yoki sizga biriktirilmagan.`);
 
+  let binoInfo = "";
+  if (m.name_or_number) {
+      const bType = m.building_type === 'apartment' ? 'Dom' : (m.building_type === 'house' ? 'Hovli' : 'Boshqa');
+      binoInfo = `\n🏢 Bino: ${m.name_or_number} (${bType})`;
+  }
+
   const txt = `📌 Vazifa #${m.id}\n📁 Yo'nalish: ${CATEGORIES[m.category] || m.category}\n` +
-              `📍 Manzil: ${m.mikrorayon} ${m.address}\n\nQuyidagi tugmani bosib bajaring:`;
-  return ctx.reply(txt, Markup.inlineKeyboard([[Markup.button.callback(`✅ Bajarildi qilib belgilash`, `complete_${m.id}`)]]));
+              `📍 Hudud: ${m.mikrorayon}${binoInfo}\n💬 Matn / Manzil: ${m.address}\n\nQuyidagi amallardan birini tanlang:`;
+
+  if (m.lat && m.lng) {
+      try { await ctx.replyWithLocation(m.lat, m.lng); } catch (e) { console.error('Location error:', e.message); }
+  }
+
+  return ctx.reply(txt, Markup.inlineKeyboard([
+    [Markup.button.callback(`🏃‍♂️ Jarayonda (Boshlash)`, `progress_${m.id}`)],
+    [Markup.button.callback(`✅ Bajarildi qilib belgilash`, `complete_${m.id}`)]
+  ]));
+});
+
+bot.action(/progress_(\d+)/, async (ctx) => {
+  const mId = ctx.match[1];
+  await ctx.answerCbQuery();
+
+  const admin = db.prepare('SELECT id FROM admins WHERE telegram_id = ?').get(ctx.from.id);
+  if (!admin) return ctx.reply("Siz xodim emassiz!");
+
+  db.prepare(`UPDATE murojaats SET status = 'in_progress' WHERE id = ? AND assigned_admin_id = ?`).run(mId, admin.id);
+
+  ctx.reply(`✅ Vazifa #${mId} muvaffaqiyatli "Jarayonda" deb belgilandi!`, STAFF_MENU);
+  
+  const m = db.prepare(`SELECT m.*, u.telegram_id AS u_tg_id FROM murojaats m JOIN users u ON m.user_id = u.id WHERE m.id = ?`).get(mId);
+  if (m && m.u_tg_id && m.source === 'telegram') {
+      try {
+        await bot.telegram.sendMessage(m.u_tg_id, `🔔 Murojaatingiz holati o'zgardi:\n\nID: #${m.id}\nYangi Holat: Jarayonda 🏃‍♂️`);
+      } catch (err) {}
+  }
 });
 
 bot.action(/complete_(\d+)/, async (ctx) => {
@@ -263,11 +309,11 @@ bot.action(/mah_(.+)/, async (ctx) => {
     ctx.session.step = 'awaiting_building';
     const buttons = [];
     for (let i = 0; i < buildings.length; i += 2) {
-      const b1TypeStr = buildings[i].type === 'apartment' ? "Ko'p qavatli" : (buildings[i].type === 'house' ? 'Xonadon' : 'Boshqa');
-      const row = [Markup.button.callback(`${buildings[i].name_or_number} (${b1TypeStr})`, `bld_${buildings[i].id}`)];
+      const b1TypeStr = buildings[i].type === 'apartment' ? "Dom" : (buildings[i].type === 'house' ? 'Hovli' : 'Boshqa');
+      const row = [Markup.button.callback(`Uy: ${buildings[i].name_or_number} (${b1TypeStr})`, `bld_${buildings[i].id}`)];
       if (buildings[i + 1]) {
-        const b2TypeStr = buildings[i + 1].type === 'apartment' ? "K. qavatli" : (buildings[i + 1].type === 'house' ? 'Xonadon' : 'Boshqa');
-        row.push(Markup.button.callback(`${buildings[i + 1].name_or_number} (${b2TypeStr})`, `bld_${buildings[i + 1].id}`));
+        const b2TypeStr = buildings[i + 1].type === 'apartment' ? "Dom" : (buildings[i + 1].type === 'house' ? 'Hovli' : 'Boshqa');
+        row.push(Markup.button.callback(`Uy: ${buildings[i + 1].name_or_number} (${b2TypeStr})`, `bld_${buildings[i + 1].id}`));
       }
       buttons.push(row);
     }
@@ -277,7 +323,7 @@ bot.action(/mah_(.+)/, async (ctx) => {
   } else {
     // No buildings yet
     ctx.session.step = 'awaiting_address_desc';
-    return ctx.reply("Uy raqamingizni va muammo tavsifini yozing:", CANCEL_KB);
+    return ctx.reply("Uy raqamingizni va muammo tavsifini yozing (yoki pastki tugma orqali GPS yuboring):", LOCATION_KB);
   }
 });
 
@@ -320,9 +366,32 @@ bot.action(/bld_(.+)/, async (ctx) => {
   await ctx.editMessageText(`✅ Bino: *${bld.name_or_number}*`, { parse_mode: 'Markdown' });
   
   ctx.session.step = 'awaiting_address_desc';
-  return ctx.reply("Muammo tavsifini yozing (ixtiyoriy, aniqroq tushunish uchun):", CANCEL_KB);
+  return ctx.reply("Muammo tavsifini yozing (yoki pastki tugma orqali GPS yuboring):", LOCATION_KB);
 });
 
+bot.on('location', (ctx, next) => {
+  ctx.session = ctx.session || {};
+  if (ctx.session.step === 'awaiting_address_desc' || ctx.session.step === 'awaiting_address') {
+    ctx.session.murojaat.lat = ctx.message.location.latitude;
+    ctx.session.murojaat.lng = ctx.message.location.longitude;
+    ctx.session.murojaat.address = (ctx.session.murojaat.address ? ctx.session.murojaat.address + " | " : "") + "📍 GPS Xaritadan belgilangan";
+    
+    if (ctx.session.murojaat.mahalla_name && !ctx.session.murojaat.mikrorayon) {
+      ctx.session.murojaat.mikrorayon = ctx.session.murojaat.mahalla_name;
+    }
+
+    ctx.session.step = 'awaiting_photos';
+    ctx.session.murojaat.photos = [];
+    return ctx.reply(
+      "📍 GPS Joylashuv qabul qilindi!\n\nEndi muammo rasmlarini yuboring (ko'pi bilan 2 ta) yoki o'tkazib yuborish uchun pastdagi tugmani bosing:", 
+      Markup.keyboard([
+        ['⏭ O\'tkazib yuborish'],
+        ['❌ Bekor qilish']
+      ]).resize()
+    );
+  }
+  return next();
+});
 
 bot.on('text', (ctx, next) => {
   ctx.session = ctx.session || {};
@@ -335,7 +404,7 @@ bot.on('text', (ctx, next) => {
   if (ctx.session.step === 'awaiting_mikrorayon') {
     ctx.session.murojaat.mikrorayon = text;
     ctx.session.step = 'awaiting_address';
-    return ctx.reply("Kucha / Bino raqami / Muammo tavsifini yozing:", CANCEL_KB);
+    return ctx.reply("Kucha / Bino raqami / Muammo tavsifini yozing (yoki GPS yuboring):", LOCATION_KB);
   }
   
   if (ctx.session.step === 'awaiting_address') {
@@ -474,8 +543,8 @@ function saveMurojaat(ctx, phone) {
   }
 
   const stmt = db.prepare(`
-    INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, status, source, user_image1, user_image2) 
-    VALUES (?, ?, ?, ?, ?, 'idle', 'telegram', ?, ?)
+    INSERT INTO murojaats (user_id, building_id, category, mikrorayon, address, status, source, user_image1, user_image2, lat, lng) 
+    VALUES (?, ?, ?, ?, ?, 'idle', 'telegram', ?, ?, ?, ?)
   `);
   
   const img1 = (m.photos && m.photos.length > 0) ? m.photos[0] : null;
@@ -488,7 +557,9 @@ function saveMurojaat(ctx, phone) {
     m.mikrorayon || '', 
     m.address || '',
     img1,
-    img2
+    img2,
+    m.lat || null,
+    m.lng || null
   );
   
   ctx.session.step = 'idle';
@@ -499,6 +570,67 @@ function saveMurojaat(ctx, phone) {
     MAIN_MENU
   );
 }
+
+// -------------------------------------------------------------------------
+// Satisfaction Verification Callbacks
+// -------------------------------------------------------------------------
+bot.on('callback_query', async (ctx) => {
+  const data = ctx.callbackQuery.data;
+
+  if (data && data.startsWith('verify_yes_')) {
+    const murojaatId = data.replace('verify_yes_', '');
+    try {
+      // Edit the message to remove the inline buttons
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+      await ctx.answerCbQuery('✅ Javobingiz uchun rahmat!');
+      await ctx.reply(
+        `✅ Rahmat! Murojaatingiz muvaffaqiyatli yakunlandi.\n\nID: #${murojaatId}\n\nXizmatimizdan foydalanganingiz uchun minnatdormiz. 🙏`,
+        MAIN_MENU
+      );
+    } catch (err) {
+      console.error('verify_yes error:', err.message);
+    }
+    return;
+  }
+
+  if (data && data.startsWith('verify_no_')) {
+    const murojaatId = data.replace('verify_no_', '');
+    try {
+      // Edit message to remove inline buttons
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+      await ctx.answerCbQuery('❌ Javobingiz qabul qilindi');
+      await ctx.reply(
+        `❗️ Afsuski, muammoingiz hal etilmaganligi haqida xabar berdingiz.\n\nID: #${murojaatId}\n\nMurojaatingiz qayta ko'rib chiqish uchun «Jarayonda» holatiga o'tkazildi. Tez orada mutaxassis siz bilan bog'lanadi.`,
+        MAIN_MENU
+      );
+
+      // Revert murojaat back to in_progress
+      const m = db.prepare('SELECT * FROM murojaats WHERE id = ?').get(murojaatId);
+      if (m) {
+        db.prepare("UPDATE murojaats SET status = 'in_progress' WHERE id = ?").run(murojaatId);
+
+        // Notify the assigned staff if any
+        if (m.assigned_admin_id) {
+          const staff = db.prepare('SELECT telegram_id, username FROM admins WHERE id = ?').get(m.assigned_admin_id);
+          if (staff && staff.telegram_id) {
+            const reAlertMsg = `⚠️ Fuqaro murojaati hal etilmaganligini bildirdi!\n\nMurojaat #${murojaatId}\n\nIltimos, muammoni qayta tekshiring va fuqaro bilan bog'laning.`;
+            await bot.telegram.sendMessage(staff.telegram_id, reAlertMsg, {
+              reply_markup: {
+                inline_keyboard: [[{ text: "👁 Ko'rish", callback_data: `viewtask_${murojaatId}` }]]
+              }
+            }).catch(e => console.error('Re-alert to staff failed:', e.message));
+          }
+        }
+      }
+    } catch (err) {
+      console.error('verify_no error:', err.message);
+    }
+    return;
+  }
+
+  // Fallback: answer unknown callbacks silently
+  await ctx.answerCbQuery().catch(() => {});
+});
 
 module.exports = {
   bot
