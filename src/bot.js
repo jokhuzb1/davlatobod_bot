@@ -30,6 +30,89 @@ async function downloadAndCompressTelegramPhoto(ctx, fileId) {
   }
 }
 
+/**
+ * Notify all BSK staff members about a new murojaat.
+ * Traces: murojaat → building → mahalla → BSK → admins with telegram_id
+ */
+async function notifyBskStaff(murojaatId) {
+  try {
+    const m = db.prepare(`
+      SELECT m.*, u.full_name, u.phone,
+             b.name_or_number as bino_nomi, b.type as bino_turi,
+             mh.name as mahalla_name, mh.bsk_id,
+             bsk.name as bsk_name
+      FROM murojaats m
+      JOIN users u ON m.user_id = u.id
+      LEFT JOIN buildings b ON m.building_id = b.id
+      LEFT JOIN mahallas mh ON b.mahalla_id = mh.id
+      LEFT JOIN bsks bsk ON mh.bsk_id = bsk.id
+      WHERE m.id = ?
+    `).get(murojaatId);
+
+    if (!m || !m.bsk_id) {
+      // Also try matching via mikrorayon (mahalla name) if no building link
+      if (m && !m.bsk_id && m.mikrorayon) {
+        const mahalla = db.prepare('SELECT bsk_id FROM mahallas WHERE name = ?').get(m.mikrorayon);
+        if (mahalla && mahalla.bsk_id) {
+          m.bsk_id = mahalla.bsk_id;
+        } else return;
+      } else return;
+    }
+
+    // Find all staff assigned to this BSK who have linked their Telegram
+    const staffList = db.prepare('SELECT id, username, telegram_id FROM admins WHERE bsk_id = ? AND telegram_id IS NOT NULL').all(m.bsk_id);
+    if (!staffList || staffList.length === 0) return;
+
+    const CATEGORIES = {
+      gaz: '🔥 Gaz', suv: '💧 Suv', elektr: '⚡ Elektr',
+      obodonlashtirish: '🏗 Obodonlashtirish', boshqa: '📌 Boshqa'
+    };
+
+    let binoInfo = '';
+    if (m.bino_nomi) {
+      const bType = m.bino_turi === 'apartment' ? 'Dom' : (m.bino_turi === 'house' ? 'Hovli' : 'Boshqa');
+      binoInfo = `\n🏢 Bino: ${m.bino_nomi} (${bType})`;
+    }
+
+    const msg = `🆕 Yangi murojaat kelib tushdi!\n\n` +
+      `📋 ID: #${m.id}\n` +
+      `👤 Fuqaro: ${m.full_name}\n` +
+      `📞 Tel: ${m.phone || 'Kiritilmagan'}\n` +
+      `📁 Yo'nalish: ${CATEGORIES[m.category] || m.category}\n` +
+      `📍 Hudud: ${m.mikrorayon || m.mahalla_name || 'Noma\'lum'}${binoInfo}\n` +
+      `💬 Tavsif: ${m.address || 'Kiritilmagan'}`;
+
+    const opts = {
+      reply_markup: {
+        inline_keyboard: [[{ text: "👁 Ko'rish", callback_data: `viewtask_${m.id}` }]]
+      }
+    };
+
+    for (const staff of staffList) {
+      try {
+        if (m.user_image1) {
+          const fullPath = path.join(__dirname, '..', 'public', m.user_image1);
+          if (fs.existsSync(fullPath)) {
+            await bot.telegram.sendPhoto(staff.telegram_id, { source: fullPath }, { caption: msg, ...opts });
+          } else {
+            await bot.telegram.sendMessage(staff.telegram_id, msg, opts);
+          }
+        } else {
+          await bot.telegram.sendMessage(staff.telegram_id, msg, opts);
+        }
+        if (m.lat && m.lng) {
+          await bot.telegram.sendLocation(staff.telegram_id, m.lat, m.lng).catch(() => {});
+        }
+      } catch (err) {
+        console.error(`BSK staff notification failed for ${staff.username}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('notifyBskStaff error:', err.message);
+  }
+}
+
+
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 bot.use(session());
@@ -461,15 +544,24 @@ bot.on('photo', async (ctx) => {
     ctx.reply(`✅ Vazifa #${mId} muvaffaqiyatli "Bajarildi" deb belgilandi!`, STAFF_MENU);
     ctx.session = { step: 'idle' };
 
+    // Send verification prompt to the citizen
     const m = db.prepare(`SELECT m.*, u.telegram_id AS u_tg_id FROM murojaats m JOIN users u ON m.user_id = u.id WHERE m.id = ?`).get(mId);
-    if (m && m.u_tg_id && m.source === 'telegram') {
+    if (m && m.u_tg_id) {
       try {
-        const text = `🎉 Sizning #${mId} raqamli murojaatingiz "Bajarildi" deb belgilandi!`;
+        const verifyMsg = `🎉 Sizning #${mId} raqamli murojaatingiz "Bajarildi" deb belgilandi!\n\n❓ Muammongiz haqiqatan ham hal etildimi?`;
+        const verifyOpts = {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Ha, bajarildi', callback_data: `verify_yes_${mId}` },
+              { text: '❌ Yo\'q, bajarilmagan', callback_data: `verify_no_${mId}` }
+            ]]
+          }
+        };
         const sysPath = path.join(__dirname, '..', 'public', savedPath);
         if (fs.existsSync(sysPath)) {
-           await bot.telegram.sendPhoto(m.u_tg_id, { source: fs.createReadStream(sysPath) }, { caption: text });
+           await bot.telegram.sendPhoto(m.u_tg_id, { source: fs.createReadStream(sysPath) }, { caption: verifyMsg, ...verifyOpts });
         } else {
-           await bot.telegram.sendMessage(m.u_tg_id, text);
+           await bot.telegram.sendMessage(m.u_tg_id, verifyMsg, verifyOpts);
         }
       } catch (err) {
         console.error("Foydalanuvchiga xabar yuborishda xatolik:", err);
@@ -564,9 +656,39 @@ function saveMurojaat(ctx, phone) {
   
   ctx.session.step = 'idle';
   ctx.session.murojaat = null;
+
+  // Notify BSK staff about the new murojaat
+  notifyBskStaff(info.lastInsertRowid).catch(err => console.error('BSK notify error:', err.message));
   
+  // Tell user which BSK is responsible
+  let bskMsg = '';
+  if (m.building_id) {
+    const bskRow = db.prepare(`
+      SELECT bsk.name as bsk_name, bsk.phone as bsk_phone
+      FROM buildings b
+      JOIN mahallas mh ON b.mahalla_id = mh.id
+      LEFT JOIN bsks bsk ON mh.bsk_id = bsk.id
+      WHERE b.id = ?
+    `).get(m.building_id);
+    if (bskRow && bskRow.bsk_name) {
+      bskMsg = `\n🏢 Mas'ul BSK: ${bskRow.bsk_name}`;
+      if (bskRow.bsk_phone) bskMsg += `\n📞 Aloqa: ${bskRow.bsk_phone}`;
+    }
+  } else if (m.mahalla_id) {
+    const bskRow = db.prepare(`
+      SELECT bsk.name as bsk_name, bsk.phone as bsk_phone
+      FROM mahallas mh
+      LEFT JOIN bsks bsk ON mh.bsk_id = bsk.id
+      WHERE mh.id = ?
+    `).get(m.mahalla_id);
+    if (bskRow && bskRow.bsk_name) {
+      bskMsg = `\n🏢 Mas'ul BSK: ${bskRow.bsk_name}`;
+      if (bskRow.bsk_phone) bskMsg += `\n📞 Aloqa: ${bskRow.bsk_phone}`;
+    }
+  }
+
   return ctx.reply(
-    `✅ Murojaat muvaffaqiyatli qabul qilindi!\n\nMurojaat ID: #${info.lastInsertRowid}\nTez orada ko'rib chiqamiz.`,
+    `✅ Murojaat muvaffaqiyatli qabul qilindi!\n\nMurojaat ID: #${info.lastInsertRowid}${bskMsg}\nTez orada ko'rib chiqamiz.`,
     MAIN_MENU
   );
 }
@@ -633,5 +755,6 @@ bot.on('callback_query', async (ctx) => {
 });
 
 module.exports = {
-  bot
+  bot,
+  notifyBskStaff
 };

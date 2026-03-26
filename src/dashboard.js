@@ -3,7 +3,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { db } = require('./db');
-const { bot } = require('./bot');
+const { bot, notifyBskStaff } = require('./bot');
 
 const router = express.Router();
 router.use(cors());
@@ -283,6 +283,9 @@ router.post('/murojaats/public', publicLimiter, upload.array('images', 2), async
       console.error('BSK notification error:', notifyErr.message);
     }
     
+    // Notify BSK staff about the new murojaat
+    notifyBskStaff(info.lastInsertRowid).catch(err => console.error('BSK staff notify (public):', err.message));
+
     res.json({ success: true, id: info.lastInsertRowid });
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -313,6 +316,7 @@ router.get('/murojaats', authenticate, (req, res) => {
   
   let query = `
     SELECT m.*, u.full_name, u.phone, a.username as assigned_admin,
+           a.full_name as staff_full_name, a.phone as staff_phone, a.job_title as staff_job_title,
            b.name_or_number as bino_nomi, b.type as bino_turi,
            mh.name as mahalla_biriktirilgan,
            bsk.name as bsk_name, bsk.phone as bsk_phone
@@ -604,7 +608,7 @@ router.get('/admin-stats', authenticate, (req, res) => {
 router.get('/staff', authenticate, (req, res) => {
   // Public staff list for dropdown assignments
   res.json(db.prepare(`
-    SELECT a.id, a.username, a.role, b.name as bsk_name 
+    SELECT a.id, a.username, a.role, a.full_name, a.phone, a.job_title, b.name as bsk_name 
     FROM admins a 
     LEFT JOIN bsks b ON a.bsk_id = b.id 
     ORDER BY a.id
@@ -678,7 +682,7 @@ router.get('/profile/murojaats', authenticate, (req, res) => {
 router.get('/admins', authenticate, (req, res) => {
   if (req.admin.role !== 'SuperAdmin') return res.status(403).json({ error: "Ruxsat yo'q" });
   res.json(db.prepare(`
-    SELECT a.id, a.username, a.role, a.bsk_id, b.name as bsk_name 
+    SELECT a.id, a.username, a.role, a.bsk_id, a.full_name, a.phone, a.job_title, b.name as bsk_name 
     FROM admins a 
     LEFT JOIN bsks b ON a.bsk_id = b.id 
     ORDER BY a.id
@@ -687,13 +691,13 @@ router.get('/admins', authenticate, (req, res) => {
 
 router.post('/admins', authenticate, (req, res) => {
   if (req.admin.role !== 'SuperAdmin') return res.status(403).json({ error: "Ruxsat yo'q" });
-  const { username, password, role, bsk_id } = req.body;
+  const { username, password, role, bsk_id, full_name, phone, job_title } = req.body;
   if(!username || !password || !role) return res.status(400).json({ error: "Barcha maydonlarni to'ldiring" });
   
   try {
      const finalBsk = bsk_id ? parseInt(bsk_id) : null;
      const hash = bcrypt.hashSync(password, 10);
-     db.prepare('INSERT INTO admins (username, password_hash, role, bsk_id) VALUES (?, ?, ?, ?)').run(username, hash, role, finalBsk);
+     db.prepare('INSERT INTO admins (username, password_hash, role, bsk_id, full_name, phone, job_title) VALUES (?, ?, ?, ?, ?, ?, ?)').run(username, hash, role, finalBsk, full_name || null, phone || null, job_title || null);
      res.json({ success: true });
   } catch (err) {
      res.status(400).json({ error: "Bunday foydalanuvchi mavjud bo'lishi mumkin" });
@@ -702,16 +706,16 @@ router.post('/admins', authenticate, (req, res) => {
 
 router.put('/admins/:id', authenticate, (req, res) => {
   if (req.admin.role !== 'SuperAdmin') return res.status(403).json({ error: "Ruxsat yo'q" });
-  const { username, password, role, bsk_id } = req.body;
+  const { username, password, role, bsk_id, full_name, phone, job_title } = req.body;
   if(!username || !role) return res.status(400).json({ error: "Username va roleni to'ldiring" });
   
   try {
      const finalBsk = bsk_id ? parseInt(bsk_id) : null;
      if (password) {
        const hash = bcrypt.hashSync(password, 10);
-       db.prepare('UPDATE admins SET username = ?, password_hash = ?, role = ?, bsk_id = ? WHERE id = ?').run(username, hash, role, finalBsk, req.params.id);
+       db.prepare('UPDATE admins SET username = ?, password_hash = ?, role = ?, bsk_id = ?, full_name = ?, phone = ?, job_title = ? WHERE id = ?').run(username, hash, role, finalBsk, full_name || null, phone || null, job_title || null, req.params.id);
      } else {
-       db.prepare('UPDATE admins SET username = ?, role = ?, bsk_id = ? WHERE id = ?').run(username, role, finalBsk, req.params.id);
+       db.prepare('UPDATE admins SET username = ?, role = ?, bsk_id = ?, full_name = ?, phone = ?, job_title = ? WHERE id = ?').run(username, role, finalBsk, full_name || null, phone || null, job_title || null, req.params.id);
      }
      res.json({ success: true });
   } catch (err) {
@@ -741,7 +745,12 @@ seedSuperAdmin();
 // 5. Mahalla Management
 // -------------------------------------------------------------
 router.get('/mahallas', authenticate, (req, res) => {
-  res.json(db.prepare('SELECT * FROM mahallas ORDER BY name ASC').all());
+  res.json(db.prepare(`
+    SELECT m.*, b.name as bsk_name 
+    FROM mahallas m 
+    LEFT JOIN bsks b ON m.bsk_id = b.id 
+    ORDER BY m.name ASC
+  `).all());
 });
 
 router.post('/mahallas', authenticate, (req, res) => {
@@ -780,11 +789,12 @@ router.put('/mahallas/:id', authenticate, (req, res) => {
 router.get('/buildings', authenticate, (req, res) => {
   if (req.query.all === 'true') {
      const query = `
-       SELECT b.*, m.name as mahalla_name,
+       SELECT b.*, m.name as mahalla_name, bs.name as bsk_name,
          (SELECT COUNT(*) FROM murojaats mur WHERE mur.building_id = b.id AND mur.status IN ('idle', 'in_progress')) as active_issues,
          (SELECT GROUP_CONCAT(DISTINCT mur.category) FROM murojaats mur WHERE mur.building_id = b.id AND mur.status IN ('idle', 'in_progress')) as active_categories
        FROM buildings b 
        JOIN mahallas m ON b.mahalla_id = m.id
+       LEFT JOIN bsks bs ON b.bsk_id = bs.id
        ORDER BY b.id DESC
      `;
      return res.json(db.prepare(query).all());
@@ -795,10 +805,11 @@ router.get('/buildings', authenticate, (req, res) => {
   
   // Calculate active issues for the building
   const query = `
-    SELECT b.*, 
+    SELECT b.*, bs.name as bsk_name,
       (SELECT COUNT(*) FROM murojaats m WHERE m.building_id = b.id AND m.status IN ('idle', 'in_progress')) as active_issues,
       (SELECT GROUP_CONCAT(DISTINCT m.category) FROM murojaats m WHERE m.building_id = b.id AND m.status IN ('idle', 'in_progress')) as active_categories
     FROM buildings b 
+    LEFT JOIN bsks bs ON b.bsk_id = bs.id
     WHERE b.mahalla_id = ?
     ORDER BY b.id DESC
   `;
@@ -807,14 +818,14 @@ router.get('/buildings', authenticate, (req, res) => {
 
 router.post('/buildings', authenticate, (req, res) => {
   if (req.admin.role !== 'SuperAdmin') return res.status(403).json({ error: "Ruxsat yo'q" });
-  const { mahalla_id, type, name_or_number, levels, apartments_count, residents_count } = req.body;
+  const { mahalla_id, type, name_or_number, levels, apartments_count, residents_count, bsk_id } = req.body;
   if (!mahalla_id || !type || !name_or_number) return res.status(400).json({ error: "Asosiy maydonlarni to'ldiring" });
   
   try {
      const info = db.prepare(`
-       INSERT INTO buildings (mahalla_id, type, name_or_number, levels, apartments_count, residents_count)
-       VALUES (?, ?, ?, ?, ?, ?)
-     `).run(mahalla_id, type, name_or_number, levels || null, apartments_count || null, residents_count || 0);
+       INSERT INTO buildings (mahalla_id, type, name_or_number, levels, apartments_count, residents_count, bsk_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+     `).run(mahalla_id, type, name_or_number, levels || null, apartments_count || null, residents_count || 0, bsk_id || null);
      res.json({ success: true, id: info.lastInsertRowid });
   } catch(err) {
      res.status(500).json({ error: err.message });
@@ -829,15 +840,15 @@ router.delete('/buildings/:id', authenticate, (req, res) => {
 
 router.put('/buildings/:id', authenticate, (req, res) => {
   if (req.admin.role !== 'SuperAdmin') return res.status(403).json({ error: "Ruxsat yo'q" });
-  const { type, name_or_number, levels, apartments_count, residents_count } = req.body;
+  const { type, name_or_number, levels, apartments_count, residents_count, bsk_id } = req.body;
   if (!type || !name_or_number) return res.status(400).json({ error: "Asosiy maydonlarni to'ldiring" });
   
   try {
      db.prepare(`
        UPDATE buildings 
-       SET type = ?, name_or_number = ?, levels = ?, apartments_count = ?, residents_count = ?
+       SET type = ?, name_or_number = ?, levels = ?, apartments_count = ?, residents_count = ?, bsk_id = ?
        WHERE id = ?
-     `).run(type, name_or_number, levels || null, apartments_count || null, residents_count || 0, req.params.id);
+     `).run(type, name_or_number, levels || null, apartments_count || null, residents_count || 0, bsk_id || null, req.params.id);
      res.json({ success: true });
   } catch(err) {
      res.status(500).json({ error: err.message });

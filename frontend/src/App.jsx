@@ -675,6 +675,26 @@ function BskTab({ showToast }) {
   );
 }
 
+function formatUzPhone(raw) {
+  const digits = raw.replace(/\D/g, '').slice(0, 9);
+  let formatted = '';
+  if (digits.length > 0) formatted += digits.slice(0, 2);
+  if (digits.length > 2) formatted += '-' + digits.slice(2, 5);
+  if (digits.length > 5) formatted += '-' + digits.slice(5, 7);
+  if (digits.length > 7) formatted += '-' + digits.slice(7, 9);
+  return formatted;
+}
+
+function PhoneInput({ value, onChange, ...props }) {
+  const displayValue = value ? '+998 ' + formatUzPhone(value) : '+998 ';
+  const handleChange = (e) => {
+    let raw = e.target.value.replace('+998', '').replace(/\s/g, '');
+    const digits = raw.replace(/\D/g, '').slice(0, 9);
+    onChange(digits);
+  };
+  return <input type="text" value={displayValue} onChange={handleChange} placeholder="+998 XX-XXX-XX-XX" {...props} />;
+}
+
 function CreateBskModal({ onClose, onSave }) {
   const [form, setForm] = useState({ name: '', phone: '', address: '' });
   const [loading, setLoading] = useState(false);
@@ -682,7 +702,8 @@ function CreateBskModal({ onClose, onSave }) {
   const submit = async (e) => {
     e.preventDefault(); setLoading(true);
     try {
-      await api.post('/bsks', { ...form, mahalla_ids: [], admin_ids: [], building_ids: [] });
+      const finalPhone = form.phone ? '+998' + form.phone.replace(/\D/g, '') : '';
+      await api.post('/bsks', { ...form, phone: finalPhone, mahalla_ids: [], admin_ids: [], building_ids: [] });
       onSave();
     } catch(err) { alert("Xatolik"); } finally { setLoading(false); }
   };
@@ -693,7 +714,7 @@ function CreateBskModal({ onClose, onSave }) {
          <div className="modal-header"><h3>Yangi BSK Tashkiloti</h3><button onClick={onClose} className="close-btn"><XCircle size={20}/></button></div>
          <form onSubmit={submit} className="modal-body" style={{display:'flex', flexDirection:'column', gap:'1rem'}}>
             <div className="input-group"><label>Tashkilot Nomi</label><input type="text" required value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Masalan: 'Comfort Service' MChJ" /></div>
-            <div className="input-group"><label>Telefon Raqam</label><input type="text" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} placeholder="+998 90 123 45 67" /></div>
+            <div className="input-group"><label>Telefon Raqam</label><PhoneInput value={form.phone} onChange={v=>setForm({...form,phone:v})} /></div>
             <div className="input-group"><label>Manzil (Joylashuv)</label><input type="text" value={form.address} onChange={e=>setForm({...form,address:e.target.value})} placeholder="Toshkent sh..." /></div>
             <button className="btn-primary" disabled={loading}>{loading ? "..." : "Ro'yxatga Olish"}</button>
          </form>
@@ -861,7 +882,18 @@ function BskProfile({ bsk, allMahallas, allAdmins, allBuildings, onBack, onSave 
   const handleAddSelection = () => {
      if(!tempSelection) return;
      const id = parseInt(tempSelection);
-     if(addMode === 'mahalla' && !selectedMahallas.includes(id)) setSelectedMahallas([...selectedMahallas, id]);
+     if(addMode === 'mahalla' && !selectedMahallas.includes(id)) {
+       // Check if this mahalla is already assigned to another BSK
+       const mahalla = allMahallas.find(m => m.id === id);
+       if (mahalla && mahalla.bsk_id && mahalla.bsk_id !== bsk.id) {
+         const otherBskName = mahalla.bsk_name || `BSK #${mahalla.bsk_id}`;
+         if (!window.confirm(`"${mahalla.name}" allaqachon "${otherBskName}" tashkilotiga biriktirilgan.\n\nUni shu BSK ga o'tkazmoqchimisiz?`)) {
+           setAddMode(null); setTempSelection('');
+           return;
+         }
+       }
+       setSelectedMahallas([...selectedMahallas, id]);
+     }
      if(addMode === 'admin' && !selectedAdmins.includes(id)) setSelectedAdmins([...selectedAdmins, id]);
      if(addMode === 'building' && !selectedBuildings.includes(id)) setSelectedBuildings([...selectedBuildings, id]);
      setAddMode(null); setTempSelection('');
@@ -926,7 +958,7 @@ function BskProfile({ bsk, allMahallas, allAdmins, allBuildings, onBack, onSave 
                   <div style={{padding:'1rem', background:'var(--bg-light)', borderBottom:'1px solid var(--border)', display:'flex', gap:'1rem'}}>
                      <select className="status-select" style={{flex:1, marginBottom:0}} value={tempSelection} onChange={e=>setTempSelection(e.target.value)}>
                         <option value="">-- Mahalla tanlang --</option>
-                        {allMahallas.filter(m => !selectedMahallas.includes(m.id)).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        {allMahallas.filter(m => !selectedMahallas.includes(m.id)).map(m => <option key={m.id} value={m.id}>{m.name}{m.bsk_name ? ` (BSK: ${m.bsk_name})` : ''}</option>)}
                      </select>
                      <button className="btn-primary" style={{padding:'0.5rem 1.5rem'}} onClick={handleAddSelection}>Birlashtirish</button>
                      <button className="action-btn" onClick={()=>setAddMode(null)}>X</button>
@@ -1025,7 +1057,8 @@ function HududlarTab({ auth, showToast }) {
   const [newMahalla, setNewMahalla] = useState('');
   const [newMahallaBsk, setNewMahallaBsk] = useState('');
   const [mahallaStats, setMahallaStats] = useState(null);
-  const [bForm, setBForm] = useState({ type: 'apartment', name_or_number: '', levels: '', apartments_count: '', residents_count: '' });
+  const [bForm, setBForm] = useState({ type: 'apartment', name_or_number: '', levels: '', apartments_count: '', residents_count: '', bsk_id: '' });
+  const [inlineBskOpen, setInlineBskOpen] = useState(false);
 
   const [showProblemsOnly, setShowProblemsOnly] = useState(false);
   const [activeKpiFilter, setActiveKpiFilter] = useState(null);
@@ -1103,7 +1136,7 @@ function HududlarTab({ auth, showToast }) {
     e.preventDefault();
     try {
       await api.post('/buildings', { ...bForm, mahalla_id: selectedMahalla.id });
-      setBForm({ type: 'apartment', name_or_number: '', levels: '', apartments_count: '', residents_count: '' });
+      setBForm({ type: 'apartment', name_or_number: '', levels: '', apartments_count: '', residents_count: '', bsk_id: '' });
       setAddBuildingOpen(false); showToast("Bino qo'shildi!"); fetchBuildings(selectedMahalla.id);
     } catch(err) {}
   };
@@ -1159,7 +1192,7 @@ function HududlarTab({ auth, showToast }) {
             <option value="" disabled>Hududni tanlang...</option>
             <option value="all">Barcha Binolar (Keng ko'lamli)</option>
             {mahallas.map(m => (
-              <option key={m.id} value={m.id}>{m.name}</option>
+              <option key={m.id} value={m.id}>{m.name}{m.bsk_name ? ` (BSK: ${m.bsk_name})` : ''}</option>
             ))}
           </select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 500, color: 'var(--text-gray)', marginTop: '0.75rem' }}>
@@ -1182,9 +1215,14 @@ function HududlarTab({ auth, showToast }) {
       {selectedMahalla && selectedMahalla.id !== 'all' && mahallaStats && (
          <div className="data-table-card fade-in" style={{ padding: '2rem', display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'center', background: 'linear-gradient(to right, #f8fafc, #f1f5f9)' }}>
             <div style={{ flex: '1 1 300px' }}>
-               <h2 style={{ margin: '0 0 1rem 0', color: 'var(--text-dark)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+               <h2 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-dark)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <MapPin size={24} style={{ color: 'var(--primary)' }} /> {selectedMahalla.name}
                </h2>
+               {selectedMahalla.bsk_name && (
+                 <div style={{ fontSize: '0.9rem', color: 'var(--primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '0.5rem' }}>
+                   <Shield size={14}/> BSK: {selectedMahalla.bsk_name}
+                 </div>
+               )}
                {auth.role === 'SuperAdmin' && (
                   <div style={{ display: 'flex', gap: '8px' }}>
                      <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.9rem' }} onClick={() => renameMahalla(selectedMahalla)}>📝 Nomini o'zgartirish</button>
@@ -1221,23 +1259,23 @@ function HududlarTab({ auth, showToast }) {
           <div className="stat-title" style={{color: 'var(--text-gray)'}}>Jami Binolar</div>
           <div className="stat-value" style={{color: 'var(--text-dark)'}}>{totalBuildings}</div>
         </div>
-        <div className="stat-card" style={{ background: 'var(--danger-bg)', cursor:'pointer', border: showProblemsOnly ? '2px solid var(--danger)' : 'none', opacity: (showProblemsOnly || !activeKpiFilter) ? 1 : 0.5 }} onClick={() => setShowProblemsOnly(!showProblemsOnly)}>
+        <div className="stat-card" style={{ background: 'var(--danger-bg)', cursor:'pointer', border: showProblemsOnly ? '2px solid var(--danger)' : 'none', opacity: (showProblemsOnly || !activeKpiFilter) ? 1 : 0.5 }} onClick={() => { setShowProblemsOnly(!showProblemsOnly); setActiveKpiFilter(null); }}>
           <div className="stat-title" style={{color: 'var(--danger)'}}>Muammoli 🔴</div>
           <div className="stat-value" style={{color: 'var(--danger)'}}>{problemBuildings}</div>
         </div>
-        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'gaz' ? '2px solid #c2410c':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'gaz') ? 1 : 0.5}} onClick={() => setActiveKpiFilter(activeKpiFilter === 'gaz' ? null : 'gaz')}>
+        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'gaz' ? '2px solid #c2410c':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'gaz') ? 1 : 0.5}} onClick={() => { setActiveKpiFilter(activeKpiFilter === 'gaz' ? null : 'gaz'); setShowProblemsOnly(false); }}>
           <div className="stat-title" style={{color: '#c2410c'}}>Gaz 🔥</div>
           <div className="stat-value" style={{color: '#c2410c'}}>{gasProblems}</div>
         </div>
-        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'suv' ? '2px solid #0284c7':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'suv') ? 1 : 0.5}} onClick={() => setActiveKpiFilter(activeKpiFilter === 'suv' ? null : 'suv')}>
+        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'suv' ? '2px solid #0284c7':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'suv') ? 1 : 0.5}} onClick={() => { setActiveKpiFilter(activeKpiFilter === 'suv' ? null : 'suv'); setShowProblemsOnly(false); }}>
           <div className="stat-title" style={{color: '#0284c7'}}>Suv 💧</div>
           <div className="stat-value" style={{color: '#0284c7'}}>{waterProblems}</div>
         </div>
-        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'elektr' ? '2px solid #f59e0b':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'elektr') ? 1 : 0.5}} onClick={() => setActiveKpiFilter(activeKpiFilter === 'elektr' ? null : 'elektr')}>
+        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'elektr' ? '2px solid #f59e0b':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'elektr') ? 1 : 0.5}} onClick={() => { setActiveKpiFilter(activeKpiFilter === 'elektr' ? null : 'elektr'); setShowProblemsOnly(false); }}>
           <div className="stat-title" style={{color: '#f59e0b'}}>Elektr ⚡</div>
           <div className="stat-value" style={{color: '#f59e0b'}}>{electrProblems}</div>
         </div>
-        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'boshqa' ? '2px solid gray':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'boshqa') ? 1 : 0.5}} onClick={() => setActiveKpiFilter(activeKpiFilter === 'boshqa' ? null : 'boshqa')}>
+        <div className="stat-card" style={{cursor:'pointer', border: activeKpiFilter === 'boshqa' ? '2px solid gray':'none', opacity: (!activeKpiFilter || activeKpiFilter === 'boshqa') ? 1 : 0.5}} onClick={() => { setActiveKpiFilter(activeKpiFilter === 'boshqa' ? null : 'boshqa'); setShowProblemsOnly(false); }}>
           <div className="stat-title" style={{color: 'var(--text-gray)'}}>Qolgan 📌</div>
           <div className="stat-value" style={{color: 'var(--text-gray)'}}>{otherProblems}</div>
         </div>
@@ -1310,6 +1348,16 @@ function HududlarTab({ auth, showToast }) {
                    <input type="text" required value={bForm.name_or_number} onChange={e=>setBForm({...bForm, name_or_number: e.target.value})} />
                  </div>
                  <div className="input-group" style={{gridColumn: '1 / -1'}}>
+                   <label>Mas'ul BSK Tashkiloti</label>
+                   <div style={{display:'flex', gap:'8px'}}>
+                     <select className="status-select" style={{flex:1, marginBottom:0}} value={bForm.bsk_id} onChange={e=>setBForm({...bForm, bsk_id: e.target.value})}>
+                       <option value="">-- BSK tanlang (Ixtiyoriy) --</option>
+                       {bsks.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                     </select>
+                     <button type="button" className="btn-secondary" style={{padding:'0.5rem 0.75rem', whiteSpace:'nowrap'}} onClick={()=>setInlineBskOpen(true)}><Plus size={14}/> Yangi BSK</button>
+                   </div>
+                 </div>
+                 <div className="input-group" style={{gridColumn: '1 / -1'}}>
                    <label>Aholi soni (Taxminiy)</label>
                    <input type="number" value={bForm.residents_count} onChange={e=>setBForm({...bForm, residents_count: e.target.value})} />
                  </div>
@@ -1330,6 +1378,8 @@ function HududlarTab({ auth, showToast }) {
          </div>
        </div>
       )}
+
+      {inlineBskOpen && <CreateBskModal onClose={()=>setInlineBskOpen(false)} onSave={() => { setInlineBskOpen(false); api.get('/bsks').then(r => setBsks(r.data)).catch(console.error); }} />}
     </div>
   );
 }
@@ -1346,6 +1396,7 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
   const [form, setForm] = useState(building);
   const [saving, setSaving] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState(null);
+  const [bsks, setBsks] = useState([]);
 
   useEffect(() => {
     fetchBuildingData();
@@ -1360,6 +1411,7 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
       setStats(st.data);
       setHistory(hi.data);
     }).catch(console.error).finally(() => setLoading(false));
+    api.get('/bsks').then(r => setBsks(r.data)).catch(console.error);
   };
 
   const handleUpdate = async (e) => {
@@ -1422,6 +1474,11 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
              <Building color="var(--primary)"/> {building.name_or_number}
            </h2>
            <div style={{color: 'var(--text-light)', marginTop: '0.5rem', fontSize: '1rem'}}>{mahallaName}</div>
+           {building.bsk_name && (
+             <div style={{color: 'var(--primary)', marginTop: '0.25rem', fontSize: '0.95rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px'}}>
+               <Shield size={14}/> BSK: {building.bsk_name}
+             </div>
+           )}
         </div>
         
         {/* Actions */}
@@ -1533,6 +1590,13 @@ function BuildingProfile({ building, mahallaName, auth, onBack, showToast }) {
                  <label>Aholi soni: </label>
                  <input type="number" value={form.residents_count} onChange={e=>setForm({...form, residents_count: e.target.value})} />
                </div>
+               <div className="input-group" style={{gridColumn: '1 / -1'}}>
+                  <label>Mas'ul BSK Tashkiloti</label>
+                  <select className="status-select" value={form.bsk_id || ''} onChange={e=>setForm({...form, bsk_id: e.target.value || null})}>
+                    <option value="">-- BSK tanlang (Ixtiyoriy) --</option>
+                    {bsks.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </div>
                {form.type === 'apartment' && (
                  <>
                   <div className="input-group">
@@ -1843,10 +1907,12 @@ function StaffProfile({ admin, onBack }) {
 function AdminsTab({ showToast }) { 
   const [admins, setAdmins] = useState([]);
   const [bsks, setBsks] = useState([]);
-  const [form, setForm] = useState({ username: '', password: '', role: 'Gaz_Staff', bsk_id: '' });
+  const defaultForm = { username: '', password: '', role: 'Gaz_Staff', bsk_id: '', full_name: '', phone: '', job_title: '' };
+  const [form, setForm] = useState(defaultForm);
   const [loading, setLoading] = useState(false);
   const [editAdmin, setEditAdmin] = useState(null);
   const [selectedStaff, setSelectedStaff] = useState(null);
+  const [formOpen, setFormOpen] = useState(false);
 
   const fetchAdmins = () => api.get('/admins').then(r => setAdmins(r.data)).catch(console.error);
   
@@ -1855,19 +1921,24 @@ function AdminsTab({ showToast }) {
     api.get('/bsks').then(r => setBsks(r.data)).catch(console.error);
   }, []);
 
+  const openCreate = () => { setEditAdmin(null); setForm(defaultForm); setFormOpen(true); };
+  const openEdit = (a) => { setEditAdmin(a); setForm({ username: a.username, password: '', role: a.role, bsk_id: a.bsk_id || '', full_name: a.full_name || '', phone: a.phone ? a.phone.replace('+998','') : '', job_title: a.job_title || '' }); setFormOpen(true); };
+
   const handleAdd = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
+      const payload = { ...form, phone: form.phone ? '+998' + form.phone.replace(/\D/g, '') : '' };
       if (editAdmin) {
-        await api.put(`/admins/${editAdmin.id}`, form);
+        await api.put(`/admins/${editAdmin.id}`, payload);
         showToast("Xodim yangilandi!");
       } else {
-        await api.post('/admins', form);
+        await api.post('/admins', payload);
         showToast("Xodim muvaffaqiyatli qo'shildi!");
       }
-      setForm({ username: '', password: '', role: 'Gaz_Staff', bsk_id: '' });
+      setForm(defaultForm);
       setEditAdmin(null);
+      setFormOpen(false);
       fetchAdmins();
     } catch (err) { alert("Xatolik ro'y berdi"); } finally { setLoading(false); }
   };
@@ -1882,21 +1953,28 @@ function AdminsTab({ showToast }) {
   }
 
   return (
-    <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-      <div className="data-table-card" style={{ flex: '1 1 500px' }}>
-        <h3 style={{padding: '1.5rem', margin: 0, borderBottom: '1px solid var(--border)'}}>Xodimlar ro'yxati</h3>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0 }}>Xodimlar Boshqaruvi</h2>
+        <button className="btn-primary" onClick={openCreate}><Plus size={16}/> Yangi Xodim Qo'shish</button>
+      </div>
+
+      <div className="data-table-card">
         <table className="data-table">
-          <thead><tr><th>ID</th><th>Login (Username)</th><th>Vazifasi (Mas'ul)</th><th>Tegishli BSK</th><th>Harakat</th></tr></thead>
+          <thead><tr><th>ID</th><th>F.I.Sh.</th><th>Login</th><th>Lavozim</th><th>Telefon</th><th>Mutaxassislik</th><th>BSK</th><th>Harakat</th></tr></thead>
           <tbody>
             {admins.map(a => (
               <tr key={a.id}>
                 <td style={{fontWeight:600}}>#{a.id}</td>
+                <td style={{fontWeight:500}}>{a.full_name || <span style={{color:'var(--text-gray)', fontStyle:'italic'}}>Ko'rsatilmagan</span>}</td>
                 <td>{a.username}</td>
+                <td>{a.job_title || <span style={{color:'var(--text-gray)'}}>-</span>}</td>
+                <td>{a.phone || <span style={{color:'var(--text-gray)'}}>-</span>}</td>
                 <td><span className="badge badge-idle">{a.role}</span></td>
                 <td style={{color:'var(--text-gray)'}}>{a.bsk_name || '-'}</td>
                 <td style={{display:'flex', gap:'8px'}}>
                   <button className="action-btn" onClick={() => setSelectedStaff(a)}><Eye size={14} /> Ko'rish</button>
-                  <button className="action-btn" onClick={() => { setEditAdmin(a); setForm({ username: a.username, password: '', role: a.role, bsk_id: a.bsk_id || '' }); }}><Edit2 size={14} /> Tahrir</button>
+                  <button className="action-btn" onClick={() => openEdit(a)}><Edit2 size={14} /> Tahrir</button>
                   <button className="logout-btn" style={{padding:'0.4rem 0.8rem', fontSize:'0.8rem', border:'none', background:'var(--danger-bg)', color:'var(--danger)'}} onClick={() => handleDelete(a.id)}><XCircle size={14} /></button>
                 </td>
               </tr>
@@ -1905,31 +1983,56 @@ function AdminsTab({ showToast }) {
         </table>
       </div>
 
-      <div className="data-table-card" style={{ flex: '1 1 300px', padding: '2rem', alignSelf: 'start' }}>
-        <h3 style={{marginTop: 0, marginBottom: '1.5rem'}}>{editAdmin ? "Xodimni tahrirlash" : "Yangi Xodim Qo'shish"}</h3>
-        <form onSubmit={handleAdd}>
-          <div className="input-group"><label>Login</label><input type="text" value={form.username} onChange={e => setForm({...form, username: e.target.value})} required placeholder="masalan. admin2" /></div>
-          <div className="input-group"><label>Parol</label><input type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} required={!editAdmin} placeholder={editAdmin ? "O'zgartirmaslik uchun bo'sh qoldiring" : "kamida 6 ta belgi"} /></div>
-          <div className="input-group">
-            <label>Tegishli BSK (Majburiy emas)</label>
-            <select className="status-select" value={form.bsk_id} onChange={e => setForm({...form, bsk_id: e.target.value})} disabled={form.role === 'SuperAdmin'} style={{background: form.role === 'SuperAdmin' ? 'var(--bg-light)' : 'white'}}>
-               <option value="">-- BSK tanlash (Umumiy) --</option>
-               {bsks.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+      {formOpen && (
+        <div className="modal-overlay">
+          <div className="modal fade-in" style={{maxWidth:'550px'}}>
+            <div className="modal-header">
+              <h3>{editAdmin ? "Xodimni tahrirlash" : "Yangi Xodim Qo'shish"}</h3>
+              <button className="close-btn" onClick={() => { setFormOpen(false); setEditAdmin(null); }}><XCircle size={20}/></button>
+            </div>
+            <form onSubmit={handleAdd} className="modal-body" style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem'}}>
+              <div className="input-group" style={{gridColumn: '1 / -1'}}>
+                <label>F.I.Sh. (To'liq ism)</label>
+                <input type="text" value={form.full_name} onChange={e => setForm({...form, full_name: e.target.value})} placeholder="Masalan: Karimov Jasur Bahodirovich" />
+              </div>
+              <div className="input-group">
+                <label>Login (Username)</label>
+                <input type="text" value={form.username} onChange={e => setForm({...form, username: e.target.value})} required placeholder="masalan. jasur_k" />
+              </div>
+              <div className="input-group">
+                <label>Parol</label>
+                <input type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} required={!editAdmin} placeholder={editAdmin ? "Bo'sh = o'zgartirilmaydi" : "Kamida 6 ta belgi"} />
+              </div>
+              <div className="input-group">
+                <label>Telefon Raqam</label>
+                <PhoneInput value={form.phone} onChange={v => setForm({...form, phone: v})} />
+              </div>
+              <div className="input-group">
+                <label>Lavozim (Kasbi)</label>
+                <input type="text" value={form.job_title} onChange={e => setForm({...form, job_title: e.target.value})} placeholder="Masalan: Santexnik ustasi" />
+              </div>
+              <div className="input-group" style={{gridColumn: '1 / -1'}}>
+                <label>Tegishli BSK (Majburiy emas)</label>
+                <select className="status-select" value={form.bsk_id} onChange={e => setForm({...form, bsk_id: e.target.value})} disabled={form.role === 'SuperAdmin'} style={{background: form.role === 'SuperAdmin' ? 'var(--bg-light)' : 'white'}}>
+                   <option value="">-- BSK tanlash (Umumiy) --</option>
+                   {bsks.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
+              <div className="input-group" style={{gridColumn: '1 / -1'}}>
+                <label>Mutaxassislik (Role)</label>
+                <select className="status-select" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
+                   <option value="SuperAdmin">Bosh Rahbar (SuperAdmin)</option><option value="Gaz_Staff">Gaz Ta'minoti</option>
+                   <option value="Suv_Staff">Suv Oqova</option><option value="Elektr_Staff">Elektr</option><option value="Obodonlashtirish_Staff">Obodonlashtirish</option><option value="Boshqa_Staff">Boshqa</option>
+                </select>
+              </div>
+              <div style={{display:'flex', gap:'1rem', gridColumn:'1 / -1', marginTop:'0.5rem'}}>
+                 <button type="submit" className="btn-primary" disabled={loading}>{loading ? <Loader2 className="spinner" /> : "Saqlash"}</button>
+                 <button type="button" className="btn-secondary" onClick={() => { setFormOpen(false); setEditAdmin(null); }}>Bekor</button>
+              </div>
+            </form>
           </div>
-          <div className="input-group">
-            <label>Mutaxassislik (Role)</label>
-            <select className="status-select" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
-               <option value="SuperAdmin">Bosh Rahbar (SuperAdmin)</option><option value="Gaz_Staff">Gaz Ta'minoti</option>
-               <option value="Suv_Staff">Suv Oqova</option><option value="Elektr_Staff">Elektr</option><option value="Obodonlashtirish_Staff">Obodonlashtirish</option><option value="Boshqa_Staff">Boshqa</option>
-            </select>
-          </div>
-          <div style={{display:'flex', gap:'1rem'}}>
-             <button type="submit" className="btn-primary" disabled={loading}>{loading ? <Loader2 className="spinner" /> : "Saqlash"}</button>
-             {editAdmin && <button type="button" className="btn-secondary" onClick={() => {setEditAdmin(null); setForm({username:'', password:'', role:'Gaz_Staff', bsk_id:''});}}>Bekor</button>}
-          </div>
-        </form>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2026,6 +2129,30 @@ function MurojaatProfile({ murojaat, onBack, onSave, auth }) {
                   <div>
                     <div style={{fontSize:'0.8rem', color:'var(--text-gray)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px'}}>Aloqa raqami</div>
                     <a href={`tel:${murojaat.bsk_phone}`} style={{fontSize:'1.1rem', fontWeight:700, color:'var(--primary)', marginTop:'4px', display:'block', textDecoration:'none'}}>{murojaat.bsk_phone}</a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {murojaat.assigned_admin && (
+            <div className="data-table-card" style={{padding:'1.5rem', background:'linear-gradient(135deg,#f0fdf4,#dcfce7)', borderLeft:'4px solid #10b981'}}>
+              <h3 style={{marginTop:0, marginBottom:'1rem', color:'#047857', display:'flex', alignItems:'center', gap:'8px'}}><Users size={18}/> Mas'ul Xodim</h3>
+              <div style={{display:'flex', gap:'2rem', flexWrap:'wrap'}}>
+                <div>
+                  <div style={{fontSize:'0.8rem', color:'var(--text-gray)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px'}}>F.I.Sh.</div>
+                  <div style={{fontSize:'1.1rem', fontWeight:700, color:'var(--text-dark)', marginTop:'4px'}}>{murojaat.staff_full_name || murojaat.assigned_admin}</div>
+                </div>
+                {murojaat.staff_job_title && (
+                  <div>
+                    <div style={{fontSize:'0.8rem', color:'var(--text-gray)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px'}}>Lavozim</div>
+                    <div style={{fontSize:'1.1rem', fontWeight:600, color:'var(--text-dark)', marginTop:'4px'}}>{murojaat.staff_job_title}</div>
+                  </div>
+                )}
+                {murojaat.staff_phone && (
+                  <div>
+                    <div style={{fontSize:'0.8rem', color:'var(--text-gray)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px'}}>Aloqa raqami</div>
+                    <a href={`tel:${murojaat.staff_phone}`} style={{fontSize:'1.1rem', fontWeight:700, color:'#047857', marginTop:'4px', display:'block', textDecoration:'none'}}>{murojaat.staff_phone}</a>
                   </div>
                 )}
               </div>

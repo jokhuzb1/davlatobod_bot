@@ -75,6 +75,9 @@ function initDb() {
   try { db.exec("ALTER TABLE bsks ADD COLUMN phone TEXT;"); } catch (e) {}
   try { db.exec("ALTER TABLE bsks ADD COLUMN address TEXT;"); } catch (e) {}
   try { db.exec("ALTER TABLE buildings ADD COLUMN bsk_id INTEGER;"); } catch (e) {}
+  try { db.exec("ALTER TABLE admins ADD COLUMN full_name TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE admins ADD COLUMN phone TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE admins ADD COLUMN job_title TEXT;"); } catch (e) {}
 
   // BSK Migrations
   try { db.exec("CREATE TABLE IF NOT EXISTS bsks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);"); } catch (e) {}

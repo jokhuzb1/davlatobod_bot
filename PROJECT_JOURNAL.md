@@ -92,8 +92,16 @@
 - [x] Revamp React Dashboard to query Geolocation API natively and embed Hyperlinked Map Markers.
 
 ## Phase 17: BSK Corporate Structures
-- [ ] Implement `bsks` table and SQLite foreign-key attachments tracking admins/mahallas.
-- [ ] Refactor Web Dashboard APIs and UI menus to provision explicit BSK assignments.
+- [x] Implement `bsks` table and SQLite foreign-key attachments tracking admins/mahallas.
+- [x] Refactor Web Dashboard APIs and UI menus to provision explicit BSK assignments.
+
+## Phase 18: BSK Staff Notification & User Confirmation
+- [x] Auto-notify all BSK staff (via Telegram) when a new murojaat is submitted (bot + web).
+- [x] Trace BSK responsibility via mahalla → BSK → admins mapping.
+- [x] User verification flow: citizen confirms completed work via Yes/No inline buttons.
+- [x] Show BSK name in mahalla dropdowns and analytics headers.
+- [x] BSK swap confirmation when assigning mahalla already linked to another BSK.
+- [x] Database reset for clean start.
 
 ## File Map
 - `PROJECT_JOURNAL.md`: Dev Log
